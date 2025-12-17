@@ -40,7 +40,16 @@
     wave: 0,
   };
 
-  const input = {
+  const input1 = {
+    up: false,
+    down: false,
+    left: false,
+    right: false,
+    dash: false,
+    dashPressed: false,
+  };
+
+  const input2 = {
     up: false,
     down: false,
     left: false,
@@ -51,7 +60,7 @@
 
   const camera = { x: 0, y: 0, shake: 0 };
 
-  const player = {
+  const BASE_PLAYER = {
     x: 0,
     y: 0,
     vx: 0,
@@ -81,7 +90,27 @@
     regen: 0,
 
     magnetPulse: 0,
+    shootAcc: 0,
   };
+
+  function makePlayer(id, color) {
+    return { ...BASE_PLAYER, id, color };
+  }
+
+  const player1 = makePlayer("P1", "rgba(232,238,255,0.92)");
+  const player2 = makePlayer("P2", "rgba(124,92,255,0.95)");
+  let multiplayer = false;
+
+  function activePlayers() {
+    return multiplayer ? [player1, player2] : [player1];
+  }
+
+  // Back-compat alias (기존 로직이 player를 참조)
+  const player = player1;
+
+  function applyToAllPlayers(fn) {
+    for (const p of activePlayers()) fn(p);
+  }
 
   /** @type {{x:number,y:number,vx:number,vy:number,r:number,life:number,damage:number,pierce:number}[]} */
   const projectiles = [];
@@ -110,21 +139,21 @@
       title: "피해량 증가",
       desc: "+20% 피해량",
       badge: "+DMG",
-      apply: () => (player.damage *= 1.2),
+      apply: () => applyToAllPlayers((p) => (p.damage *= 1.2)),
     },
     {
       id: "as",
       title: "공격 속도",
       desc: "+18% 발사 속도",
       badge: "+AS",
-      apply: () => (player.fireRate *= 1.18),
+      apply: () => applyToAllPlayers((p) => (p.fireRate *= 1.18)),
     },
     {
       id: "spd",
       title: "이동 속도",
       desc: "+12% 이동 속도",
       badge: "+MS",
-      apply: () => (player.speed *= 1.12),
+      apply: () => applyToAllPlayers((p) => (p.speed *= 1.12)),
     },
     {
       id: "hp",
@@ -132,8 +161,10 @@
       desc: "+25 최대 체력 (현재 체력도 회복)",
       badge: "+HP",
       apply: () => {
-        player.hpMax += 25;
-        player.hp = Math.min(player.hpMax, player.hp + 25);
+        applyToAllPlayers((p) => {
+          p.hpMax += 25;
+          p.hp = Math.min(p.hpMax, p.hp + 25);
+        });
       },
     },
     {
@@ -141,35 +172,35 @@
       title: "재생",
       desc: "+0.6 HP/초",
       badge: "REGEN",
-      apply: () => (player.regen += 0.6),
+      apply: () => applyToAllPlayers((p) => (p.regen += 0.6)),
     },
     {
       id: "size",
       title: "투사체 크기",
       desc: "+35% 투사체 크기",
       badge: "+SIZE",
-      apply: () => (player.projSize *= 1.35),
+      apply: () => applyToAllPlayers((p) => (p.projSize *= 1.35)),
     },
     {
       id: "pierce",
       title: "관통",
       desc: "+1 관통",
       badge: "+PIERCE",
-      apply: () => (player.pierce += 1),
+      apply: () => applyToAllPlayers((p) => (p.pierce += 1)),
     },
     {
       id: "magnet",
       title: "자석 범위",
       desc: "+35% 경험치 흡수 범위",
       badge: "+MAG",
-      apply: () => (player.pickup *= 1.35),
+      apply: () => applyToAllPlayers((p) => (p.pickup *= 1.35)),
     },
     {
       id: "dash",
       title: "대시 쿨다운 감소",
       desc: "대시 쿨다운 -18%",
       badge: "DASH",
-      apply: () => (player.dashCdMax *= 0.82),
+      apply: () => applyToAllPlayers((p) => (p.dashCdMax *= 0.82)),
     },
   ];
 
@@ -215,20 +246,21 @@
     overlayEl.classList.add("hidden");
 
     floats.push({
-      x: player.x,
-      y: player.y - 24,
+      x: player1.x,
+      y: player1.y - 24,
       ttl: 1.0,
       text: `+ ${u.title}`,
       color: "#7c5cff",
     });
   }
 
+  // Shared progression (레벨/XP는 팀 공용)
   function gainXP(amount) {
-    player.xp += amount;
-    while (player.xp >= player.xpToNext) {
-      player.xp -= player.xpToNext;
-      player.level += 1;
-      player.xpToNext = Math.floor(player.xpToNext * 1.28 + 8);
+    player1.xp += amount;
+    while (player1.xp >= player1.xpToNext) {
+      player1.xp -= player1.xpToNext;
+      player1.level += 1;
+      player1.xpToNext = Math.floor(player1.xpToNext * 1.28 + 8);
       chooseUpgrades();
     }
   }
@@ -281,11 +313,11 @@
     });
   }
 
-  function nearestEnemy() {
+  function nearestEnemy(from) {
     let best = null;
     let bestD = Infinity;
     for (const e of enemies) {
-      const d = (e.x - player.x) ** 2 + (e.y - player.y) ** 2;
+      const d = (e.x - from.x) ** 2 + (e.y - from.y) ** 2;
       if (d < bestD) {
         bestD = d;
         best = e;
@@ -294,34 +326,34 @@
     return best;
   }
 
-  function shoot() {
-    const e = nearestEnemy();
+  function shoot(from) {
+    const e = nearestEnemy(from);
     if (!e) return;
 
-    const dx = e.x - player.x;
-    const dy = e.y - player.y;
+    const dx = e.x - from.x;
+    const dy = e.y - from.y;
     const [nx, ny] = norm(dx, dy);
 
     const spread = 0.06;
     const ang = Math.atan2(ny, nx) + rand(-spread, spread);
 
-    const vx = Math.cos(ang) * player.projSpeed;
-    const vy = Math.sin(ang) * player.projSpeed;
+    const vx = Math.cos(ang) * from.projSpeed;
+    const vy = Math.sin(ang) * from.projSpeed;
 
     projectiles.push({
-      x: player.x,
-      y: player.y,
+      x: from.x,
+      y: from.y,
       vx,
       vy,
-      r: player.projSize,
+      r: from.projSize,
       life: 1.35,
-      damage: player.damage,
-      pierce: player.pierce,
+      damage: from.damage,
+      pierce: from.pierce,
+      knock: from.knock,
     });
   }
 
   // Timers
-  let shootAcc = 0;
   let spawnAcc = 0;
 
   function reset() {
@@ -331,32 +363,12 @@
     state.gameOver = false;
     state.wave = 0;
 
-    player.x = 0;
-    player.y = 0;
-    player.vx = 0;
-    player.vy = 0;
-    player.hp = 100;
-    player.hpMax = 100;
-    player.invuln = 0;
-    player.speed = 175;
-    player.dashCd = 0;
-    player.dashCdMax = 1.1;
-    player.dashTime = 0;
-
-    player.level = 1;
-    player.xp = 0;
-    player.xpToNext = 18;
-
-    player.damage = 9;
-    player.fireRate = 3.2;
-    player.projSpeed = 420;
-    player.pierce = 0;
-    player.projSize = 4;
-    player.knock = 120;
-    player.pickup = 70;
-    player.regen = 0;
-
-    shootAcc = 0;
+    Object.assign(player1, { ...BASE_PLAYER, id: "P1", color: player1.color });
+    Object.assign(player2, { ...BASE_PLAYER, id: "P2", color: player2.color });
+    player1.x = 0;
+    player1.y = 0;
+    player2.x = 40;
+    player2.y = 0;
     spawnAcc = 0;
 
     projectiles.length = 0;
@@ -371,18 +383,40 @@
   // Input
   function setKey(e, down) {
     const k = e.key.toLowerCase();
-    if (k === "w" || e.key === "ArrowUp") input.up = down;
-    if (k === "s" || e.key === "ArrowDown") input.down = down;
-    if (k === "a" || e.key === "ArrowLeft") input.left = down;
-    if (k === "d" || e.key === "ArrowRight") input.right = down;
+    // P1: WASD + Space
+    if (k === "w") input1.up = down;
+    if (k === "s") input1.down = down;
+    if (k === "a") input1.left = down;
+    if (k === "d") input1.right = down;
+
+    // P2: Arrow keys + Enter (멀티일 때만)
+    if (multiplayer) {
+      if (e.key === "ArrowUp") input2.up = down;
+      if (e.key === "ArrowDown") input2.down = down;
+      if (e.key === "ArrowLeft") input2.left = down;
+      if (e.key === "ArrowRight") input2.right = down;
+    }
 
     if (e.code === "Space") {
-      input.dash = down;
-      if (down) input.dashPressed = true;
+      input1.dash = down;
+      if (down) input1.dashPressed = true;
+    }
+
+    if (multiplayer && (e.key === "Enter" || e.code === "NumpadEnter")) {
+      input2.dash = down;
+      if (down) input2.dashPressed = true;
     }
 
     if (down && (k === "p")) {
       if (!state.gameOver && !choosing) state.paused = !state.paused;
+    }
+
+    // 멀티 토글: M (게임 시작 전/게임오버일 때만)
+    if (down && k === "m") {
+      if (state.t < 0.25 || state.gameOver) {
+        multiplayer = !multiplayer;
+        reset();
+      }
     }
 
     if (down && state.gameOver && k === "r") {
@@ -397,7 +431,7 @@
   }
 
   window.addEventListener("keydown", (e) => {
-    if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " "].includes(e.key)) e.preventDefault();
+    if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " ", "Enter"].includes(e.key)) e.preventDefault();
     setKey(e, true);
   });
   window.addEventListener("keyup", (e) => setKey(e, false));
@@ -423,81 +457,100 @@
     // Difficulty ramp
     const spawnRate = 0.9 + state.t / 35; // enemies/sec
 
-    // Regen
-    if (player.regen > 0) {
-      player.hp = Math.min(player.hpMax, player.hp + player.regen * dt);
-    }
+    const ps = activePlayers();
 
-    // Dash
-    if (player.dashCd > 0) player.dashCd -= dt;
-    if (player.invuln > 0) player.invuln -= dt;
-    if (player.dashTime > 0) {
-      player.dashTime -= dt;
-    }
+    // Players update (movement / dash / regen / shooting)
+    for (const p of ps) {
+      const inp = p === player1 ? input1 : input2;
 
-    const ix = (input.right ? 1 : 0) - (input.left ? 1 : 0);
-    const iy = (input.down ? 1 : 0) - (input.up ? 1 : 0);
-    let mx = ix;
-    let my = iy;
+      // Regen
+      if (p.regen > 0) {
+        p.hp = Math.min(p.hpMax, p.hp + p.regen * dt);
+      }
 
-    if (mx !== 0 || my !== 0) {
-      [mx, my] = norm(mx, my);
-    }
+      // Dash timers
+      if (p.dashCd > 0) p.dashCd -= dt;
+      if (p.invuln > 0) p.invuln -= dt;
+      if (p.dashTime > 0) p.dashTime -= dt;
 
-    let speed = player.speed;
+      const ix = (inp.right ? 1 : 0) - (inp.left ? 1 : 0);
+      const iy = (inp.down ? 1 : 0) - (inp.up ? 1 : 0);
+      let mx = ix;
+      let my = iy;
+      if (mx !== 0 || my !== 0) [mx, my] = norm(mx, my);
 
-    // Start dash
-    if (input.dashPressed) {
-      input.dashPressed = false;
-      if (player.dashCd <= 0 && (mx !== 0 || my !== 0)) {
-        player.dashTime = player.dashTimeMax;
-        player.dashCd = player.dashCdMax;
-        player.invuln = Math.max(player.invuln, 0.12);
-        camera.shake = Math.max(camera.shake, 5);
+      let speed = p.speed;
+
+      // Start dash
+      if (inp.dashPressed) {
+        inp.dashPressed = false;
+        if (p.dashCd <= 0 && (mx !== 0 || my !== 0)) {
+          p.dashTime = p.dashTimeMax;
+          p.dashCd = p.dashCdMax;
+          p.invuln = Math.max(p.invuln, 0.12);
+          camera.shake = Math.max(camera.shake, 5);
+        }
+      }
+
+      if (p.dashTime > 0) speed = p.dashSpeed;
+
+      // Smooth movement
+      const targetVx = mx * speed;
+      const targetVy = my * speed;
+      const accel = p.dashTime > 0 ? 26 : 16;
+
+      p.vx = lerp(p.vx, targetVx, 1 - Math.exp(-accel * dt));
+      p.vy = lerp(p.vy, targetVy, 1 - Math.exp(-accel * dt));
+
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+
+      // Auto shooting (per player)
+      p.shootAcc += dt;
+      const shotInterval = 1 / p.fireRate;
+      while (p.shootAcc >= shotInterval) {
+        p.shootAcc -= shotInterval;
+        shoot(p);
       }
     }
 
-    if (player.dashTime > 0) speed = player.dashSpeed;
-
-    // Smooth movement
-    const targetVx = mx * speed;
-    const targetVy = my * speed;
-    const accel = player.dashTime > 0 ? 26 : 16;
-
-    player.vx = lerp(player.vx, targetVx, 1 - Math.exp(-accel * dt));
-    player.vy = lerp(player.vy, targetVy, 1 - Math.exp(-accel * dt));
-
-    player.x += player.vx * dt;
-    player.y += player.vy * dt;
-
-    // Camera
-    camera.x = lerp(camera.x, player.x, 1 - Math.exp(-10 * dt));
-    camera.y = lerp(camera.y, player.y, 1 - Math.exp(-10 * dt));
-
-    // Auto shooting
-    shootAcc += dt;
-    const shotInterval = 1 / player.fireRate;
-    while (shootAcc >= shotInterval) {
-      shootAcc -= shotInterval;
-      shoot();
-    }
+    // Camera follows team center
+    const cx = ps.reduce((s, p) => s + p.x, 0) / ps.length;
+    const cy = ps.reduce((s, p) => s + p.y, 0) / ps.length;
+    camera.x = lerp(camera.x, cx, 1 - Math.exp(-10 * dt));
+    camera.y = lerp(camera.y, cy, 1 - Math.exp(-10 * dt));
 
     // Spawn
     spawnAcc += dt;
     const spawnInterval = 1 / spawnRate;
     while (spawnAcc >= spawnInterval) {
       spawnAcc -= spawnInterval;
-      const r = Math.random();
-      if (state.t > 25 && r < 0.12) spawnEnemy("runner");
-      else if (state.t > 45 && r < 0.20) spawnEnemy("tank");
-      else spawnEnemy("grunt");
+      // 2명이면 적 스폰 2배
+      for (let n = 0; n < activePlayers().length; n++) {
+        const r = Math.random();
+        if (state.t > 25 && r < 0.12) spawnEnemy("runner");
+        else if (state.t > 45 && r < 0.20) spawnEnemy("tank");
+        else spawnEnemy("grunt");
+      }
     }
 
     // Update enemies
     for (let i = enemies.length - 1; i >= 0; i--) {
       const e = enemies[i];
-      const dx = player.x - e.x;
-      const dy = player.y - e.y;
+      // Chase nearest player
+      const ps = activePlayers();
+      let target = ps[0];
+      let bestD = Infinity;
+      for (const p of ps) {
+        const d2 = (p.x - e.x) ** 2 + (p.y - e.y) ** 2;
+        if (d2 < bestD) {
+          bestD = d2;
+          target = p;
+        }
+      }
+
+      const dx = target.x - e.x;
+      const dy = target.y - e.y;
       const [nx, ny] = norm(dx, dy);
 
       e.vx = lerp(e.vx, nx * e.speed, 1 - Math.exp(-8 * dt));
@@ -507,26 +560,29 @@
 
       if (e.hitCd > 0) e.hitCd -= dt;
 
-      // Collision player
-      const d = len(player.x - e.x, player.y - e.y);
-      if (d < player.r + e.r) {
-        if (e.hitCd <= 0 && player.invuln <= 0) {
-          e.hitCd = 0.55;
-          player.invuln = 0.42;
-          player.hp -= e.damage;
-          camera.shake = Math.max(camera.shake, 9);
-          effects.hitFlash = 0.2;
-          floats.push({ x: player.x, y: player.y - 18, ttl: 0.65, text: `-${e.damage}`, color: "#ff4d6d" });
-          if (player.hp <= 0) {
-            player.hp = 0;
-            state.gameOver = true;
+      // Collision players
+      for (const p of ps) {
+        const d = len(p.x - e.x, p.y - e.y);
+        if (d < p.r + e.r) {
+          if (e.hitCd <= 0 && p.invuln <= 0) {
+            e.hitCd = 0.55;
+            p.invuln = 0.42;
+            p.hp -= e.damage;
+            camera.shake = Math.max(camera.shake, 9);
+            effects.hitFlash = 0.2;
+            floats.push({ x: p.x, y: p.y - 18, ttl: 0.65, text: `-${e.damage}`, color: "#ff4d6d" });
+            if (p.hp <= 0) {
+              p.hp = 0;
+              state.gameOver = true;
+            }
           }
-        }
 
-        // soft push
-        const push = (player.r + e.r - d) * 0.6;
-        e.x -= nx * push;
-        e.y -= ny * push;
+          // soft push (away from player)
+          const [pnx, pny] = norm(e.x - p.x, e.y - p.y);
+          const push = (p.r + e.r - d) * 0.6;
+          e.x += pnx * push;
+          e.y += pny * push;
+        }
       }
     }
 
@@ -550,15 +606,16 @@
           // damage
           e.hp -= p.damage;
           const [nx, ny] = norm(e.x - p.x, e.y - p.y);
-          e.x += nx * (player.knock * dt);
-          e.y += ny * (player.knock * dt);
+          e.x += nx * (p.knock * dt);
+          e.y += ny * (p.knock * dt);
 
           floats.push({ x: e.x, y: e.y - 18, ttl: 0.55, text: `${Math.floor(p.damage)}`, color: "#e8eeff" });
 
           if (e.hp <= 0) {
             // drop XP
             const base = 4 + Math.floor(state.t / 25);
-            spawnOrb(e.x, e.y, base);
+            // 2명이면 아이템(경험치) 2배
+            for (let n = 0; n < activePlayers().length; n++) spawnOrb(e.x, e.y, base);
             enemies.splice(j, 1);
           }
 
@@ -575,18 +632,30 @@
     // Update orbs + pickup
     for (let i = orbs.length - 1; i >= 0; i--) {
       const o = orbs[i];
-      const dx = player.x - o.x;
-      const dy = player.y - o.y;
+      const ps = activePlayers();
+      // Find nearest player (and pull if within pickup)
+      let target = ps[0];
+      let bestD = Infinity;
+      for (const p of ps) {
+        const d2 = (p.x - o.x) ** 2 + (p.y - o.y) ** 2;
+        if (d2 < bestD) {
+          bestD = d2;
+          target = p;
+        }
+      }
+
+      const dx = target.x - o.x;
+      const dy = target.y - o.y;
       const d = len(dx, dy);
 
-      if (d < player.pickup) {
+      if (d < target.pickup) {
         const [nx, ny] = norm(dx, dy);
-        const pull = clamp((player.pickup - d) / player.pickup, 0, 1);
+        const pull = clamp((target.pickup - d) / target.pickup, 0, 1);
         o.x += nx * (260 * pull * dt);
         o.y += ny * (260 * pull * dt);
       }
 
-      if (d < player.r + o.r + 2) {
+      if (d < target.r + o.r + 2) {
         gainXP(o.amount);
         orbs.splice(i, 1);
       }
@@ -605,20 +674,23 @@
     if (effects.hitFlash > 0) effects.hitFlash = Math.max(0, effects.hitFlash - 2.2 * dt);
 
     // HUD
-    const xpPct = Math.floor((player.xp / player.xpToNext) * 100);
-    const dashPct = Math.floor(((player.dashCdMax - player.dashCd) / player.dashCdMax) * 100);
+    const xpPct = Math.floor((player1.xp / player1.xpToNext) * 100);
+    const dash1Pct = Math.floor(((player1.dashCdMax - player1.dashCd) / player1.dashCdMax) * 100);
+    const dash2Pct = Math.floor(((player2.dashCdMax - player2.dashCd) / player2.dashCdMax) * 100);
+
+    const hpLine = multiplayer
+      ? `P1 HP ${Math.floor(player1.hp)}/${player1.hpMax}   P2 HP ${Math.floor(player2.hp)}/${player2.hpMax}`
+      : `HP ${Math.floor(player1.hp)}/${player1.hpMax}`;
 
     hudEl.textContent =
-      `HP ${Math.floor(player.hp)}/${player.hpMax}  ` +
-      `LV ${player.level}  ` +
-      `XP ${xpPct}%\n` +
-      `DMG ${Math.floor(player.damage)}  ` +
-      `AS ${player.fireRate.toFixed(1)}/s  ` +
-      `PIERCE ${player.pierce}  ` +
-      `PICKUP ${Math.floor(player.pickup)}\n` +
+      `${hpLine}  LV ${player1.level}  XP ${xpPct}%\n` +
+      `DMG ${Math.floor(player1.damage)}  ` +
+      `AS ${player1.fireRate.toFixed(1)}/s  ` +
+      `PIERCE ${player1.pierce}  ` +
+      `PICKUP ${Math.floor(player1.pickup)}\n` +
       `ENEMIES ${enemies.length}  ` +
       `TIME ${state.t.toFixed(1)}s  ` +
-      `DASH ${clamp(dashPct, 0, 100)}%`;
+      (multiplayer ? `DASH P1 ${clamp(dash1Pct, 0, 100)}%  P2 ${clamp(dash2Pct, 0, 100)}%` : `DASH ${clamp(dash1Pct, 0, 100)}%`);
 
     if (state.gameOver) {
       msgEl.innerHTML = `사망! <span class="kbd">R</span> 로 다시 시작`;
@@ -711,46 +783,67 @@
       ctx.fillRect(sx - e.r, sy - e.r - 10, e.r * 2 * pct, 4);
     }
 
-    // Player
+    // Players
     {
-      const [sx, sy] = worldToScreen(player.x, player.y);
+      const ps = activePlayers();
+      for (const p of ps) {
+        const [sx, sy] = worldToScreen(p.x, p.y);
 
-      // pickup ring
-      ctx.beginPath();
-      ctx.strokeStyle = "rgba(69,255,177,0.07)";
-      ctx.lineWidth = 2;
-      ctx.arc(sx, sy, player.pickup, 0, TAU);
-      ctx.stroke();
+        // pickup ring
+        ctx.beginPath();
+        ctx.strokeStyle = "rgba(69,255,177,0.07)";
+        ctx.lineWidth = 2;
+        ctx.arc(sx, sy, p.pickup, 0, TAU);
+        ctx.stroke();
 
-      // body
-      ctx.beginPath();
-      const inv = player.invuln > 0;
-      ctx.fillStyle = inv ? "rgba(255,255,255,0.95)" : "rgba(232,238,255,0.92)";
-      ctx.arc(sx, sy, player.r, 0, TAU);
-      ctx.fill();
+        // body
+        ctx.beginPath();
+        const inv = p.invuln > 0;
+        ctx.fillStyle = inv ? "rgba(255,255,255,0.95)" : p.color;
+        ctx.arc(sx, sy, p.r, 0, TAU);
+        ctx.fill();
 
-      // direction nub
-      const d = norm(player.vx, player.vy);
-      ctx.beginPath();
-      ctx.fillStyle = "rgba(124,92,255,0.9)";
-      ctx.arc(sx + d[0] * 10, sy + d[1] * 10, 3.2, 0, TAU);
-      ctx.fill();
+        // direction nub
+        const d = norm(p.vx, p.vy);
+        ctx.beginPath();
+        ctx.fillStyle = "rgba(124,92,255,0.9)";
+        ctx.arc(sx + d[0] * 10, sy + d[1] * 10, 3.2, 0, TAU);
+        ctx.fill();
 
-      // HP bar
-      const hpPct = clamp(player.hp / player.hpMax, 0, 1);
+        // label
+        ctx.fillStyle = "rgba(159,176,214,0.95)";
+        ctx.font = "11px ui-sans-serif, system-ui";
+        ctx.fillText(p.id, sx - 10, sy - p.r - 10);
+      }
+
+      // HP bars (P1 / P2)
+      const barW = W - 32;
+      const baseY = H - 18;
+      const hp1 = clamp(player1.hp / player1.hpMax, 0, 1);
+      const hp2 = clamp(player2.hp / player2.hpMax, 0, 1);
+
       ctx.fillStyle = "rgba(0,0,0,0.35)";
-      ctx.fillRect(16, H - 18, W - 32, 8);
+      ctx.fillRect(16, baseY, barW, 8);
       ctx.fillStyle = "rgba(69,255,177,0.75)";
-      ctx.fillRect(16, H - 18, (W - 32) * hpPct, 8);
+      ctx.fillRect(16, baseY, barW * hp1, 8);
       ctx.strokeStyle = "rgba(255,255,255,0.12)";
-      ctx.strokeRect(16, H - 18, W - 32, 8);
+      ctx.strokeRect(16, baseY, barW, 8);
 
-      // XP bar
-      const xpPct = clamp(player.xp / player.xpToNext, 0, 1);
+      if (multiplayer) {
+        ctx.fillStyle = "rgba(0,0,0,0.28)";
+        ctx.fillRect(16, baseY - 10, barW, 6);
+        ctx.fillStyle = "rgba(124,92,255,0.75)";
+        ctx.fillRect(16, baseY - 10, barW * hp2, 6);
+        ctx.strokeStyle = "rgba(255,255,255,0.10)";
+        ctx.strokeRect(16, baseY - 10, barW, 6);
+      }
+
+      // XP bar (shared)
+      const xpPct = clamp(player1.xp / player1.xpToNext, 0, 1);
       ctx.fillStyle = "rgba(124,92,255,0.35)";
-      ctx.fillRect(16, H - 30, (W - 32) * xpPct, 6);
+      ctx.fillRect(16, H - 30, barW * xpPct, 6);
       ctx.strokeStyle = "rgba(255,255,255,0.10)";
-      ctx.strokeRect(16, H - 30, W - 32, 6);
+      ctx.strokeRect(16, H - 30, barW, 6);
     }
 
     // Floating text
