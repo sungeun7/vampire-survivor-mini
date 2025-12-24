@@ -57,7 +57,8 @@ body{
     backdrop-filter: blur(6px);
   }
 }
-.hidden{display:none}
+/* #overlay has higher specificity than .hidden, so ensure overlay can be hidden */
+#overlay.hidden{display:none}
 .panel{
   width:min(620px, 92vw);
   background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.03));
@@ -84,3 +85,25 @@ body{
 .choiceDesc{color:var(--muted); font-size:12px; margin-top:6px; line-height:1.35}
 .badge{color:rgba(255,255,255,.85); font-size:12px; padding:2px 8px; border-radius:999px; background:rgba(124,92,255,.25); border:1px solid rgba(124,92,255,.35)}
 .kbd{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size:11px; opacity:.9}
+.menu-button{
+  position:fixed;
+  top:16px;
+  right:16px;
+  pointer-events:auto;
+  cursor:pointer;
+  padding:8px 16px;
+  border-radius:8px;
+  background:rgba(15,23,48,.75);
+  border:1px solid rgba(255,255,255,.15);
+  color:var(--text);
+  font-size:13px;
+  font-weight:600;
+  transition:transform .08s ease, border-color .12s ease, background .12s ease;
+  z-index:1000;
+}
+.menu-button:hover{
+  transform:translateY(-1px);
+  border-color:rgba(124,92,255,.55);
+  background:rgba(15,23,48,.9);
+}
+.menu-button.hidden{display:none}

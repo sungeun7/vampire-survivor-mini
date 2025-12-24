@@ -1,0 +1,17 @@
+{
+  "name": "vampire-survivor-mini",
+  "version": "1.0.0",
+  "description": "Vampire Survivors 스타일 미니 게임 - Tailscale 멀티플레이 지원",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": ["game", "multiplayer", "websocket"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.16.0"
+  }
+}
+
