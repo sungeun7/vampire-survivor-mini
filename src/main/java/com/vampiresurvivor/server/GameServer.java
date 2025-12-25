@@ -113,7 +113,7 @@ public class GameServer {
                     player.level = 1;
                     player.color = isHost ? "rgba(232,238,255,0.92)" : "rgba(124,92,255,0.95)";
                     player.damage = 9;
-                    player.fireRate = 0.96f; // 70% 감소: 3.2 * 0.3
+                    player.fireRate = 2.24f; // 30% 감소: 3.2 * 0.7
                     player.pierce = 0;
                     player.pickup = 70;
                     player.regen = 0;

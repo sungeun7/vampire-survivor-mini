@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 REM Change to script directory
-cd /d "%~dp0"
+cd /d "%~dp0" 2>nul
 
 echo ========================================
 echo Mini Survivors - Server Startup
@@ -14,11 +14,13 @@ echo Checking Java...
 java -version >nul 2>&1
 if errorlevel 1 (
     echo.
+    echo ========================================
     echo ERROR: Java is not installed or not in PATH.
+    echo ========================================
+    echo.
     echo Please run setup.bat first to install Java and Maven.
     echo.
-    pause
-    exit /b 1
+    goto :error_exit
 )
 
 echo Java found.
@@ -63,11 +65,13 @@ if not exist "target\mini-survivors-server-1.0.0.jar" (
         
         if not defined MAVEN_CMD (
             echo.
+            echo ========================================
             echo ERROR: Maven is not installed or not in PATH.
+            echo ========================================
+            echo.
             echo Please run setup.bat first to install Java and Maven.
             echo.
-            pause
-            exit /b 1
+            goto :error_exit
         )
         
         echo Building with Maven...
@@ -80,10 +84,11 @@ if not exist "target\mini-survivors-server-1.0.0.jar" (
     REM Check if build succeeded
     if !BUILD_SUCCESS! equ 0 (
         echo.
+        echo ========================================
         echo Build failed!
+        echo ========================================
         echo.
-        pause
-        exit /b 1
+        goto :error_exit
     )
     
     echo.
@@ -94,11 +99,12 @@ if not exist "target\mini-survivors-server-1.0.0.jar" (
 REM Verify JAR file exists
 if not exist "target\mini-survivors-server-1.0.0.jar" (
     echo.
+    echo ========================================
     echo ERROR: JAR file not found!
+    echo ========================================
     echo Path: target\mini-survivors-server-1.0.0.jar
     echo.
-    pause
-    exit /b 1
+    goto :error_exit
 )
 
 REM Try to add firewall rules for the server ports (requires admin)
@@ -180,6 +186,7 @@ echo To stop the server, close the server window.
 echo.
 
 REM Start server in a separate window
+echo Starting Java server...
 start "Mini Survivors Server" java -jar target\mini-survivors-server-1.0.0.jar
 
 REM Wait for server to start (check if port is listening)
@@ -200,10 +207,19 @@ REM Open browser only if Tailscale IP is available (NO localhost)
 if !SERVER_READY! equ 1 (
     if defined GAME_URL (
         if "!GAME_URL!" neq "" (
-            echo Opening browser with Tailscale IP...
-            REM 기존 브라우저 창이 열려있어도 새 창으로 열기 (중복 방지)
-            start "" "!GAME_URL!"
-            timeout /t 2 >nul
+            REM localhost 포함 여부 확인 (localhost로 열지 않음)
+            echo !GAME_URL! | findstr /i "localhost" >nul 2>&1
+            if errorlevel 1 (
+                REM localhost가 아니면 브라우저 열기
+                echo Opening browser with Tailscale IP...
+                start "" "!GAME_URL!"
+                timeout /t 2 >nul
+            ) else (
+                echo.
+                echo Browser not opened - localhost URL detected.
+                echo Please connect manually using your Tailscale IP.
+                echo.
+            )
         ) else (
             echo.
             echo Browser not opened - Tailscale IP not available.
@@ -242,8 +258,21 @@ if defined GAME_URL (
 ) else (
     echo Please connect manually using your Tailscale IP.
 )
-echo To stop the server, close the server window.
 echo.
+echo ========================================
+echo Server startup script completed.
+echo ========================================
+echo.
+echo To stop the server, close the server window.
+echo Press any key to close this window (server will continue running)...
+goto :end
+
+:error_exit
+echo.
+echo Press any key to exit...
+goto :end
+
+:end
 pause
 endlocal
 exit /b 0

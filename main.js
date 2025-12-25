@@ -254,7 +254,7 @@
     xpToNext: 18,
 
     damage: 9,
-    fireRate: 0.96, // shots per sec (70% 감소: 3.2 * 0.3)
+    fireRate: 2.24, // shots per sec (30% 감소: 3.2 * 0.7)
     angularSpeed: 8.0, // 칼 회전 속도 (rad/s)
     projSpeed: 420,
     pierce: 0,
@@ -475,6 +475,7 @@
     floats.length = 0;
     treasureChests.length = 0;
     lastTreasureChestTime = 0;
+    lastBossTime = 0;
 
     // 효과 초기화
     effects.hitFlash = 0;
@@ -727,22 +728,32 @@
 
     choicesEl.innerHTML = "";
 
-    // 호스트 연결 URL 결정: 현재 페이지의 hostname 사용 (Tailscale IP 사용 우선)
+    // 호스트 연결 URL 결정: Tailscale IP 우선 사용
     const currentHostname = window.location.hostname;
     let hostWsUrl = null;
     
-    // 현재 페이지가 Tailscale IP나 일반 IP로 열려있으면 그것을 사용
-    if (currentHostname.startsWith('100.') || /^(\d{1,3}\.){3}\d{1,3}$/.test(currentHostname)) {
+    // 1순위: 저장된 Tailscale IP (100.으로 시작하는 IP만)
+    const savedIP = localStorage.getItem('lastTailscaleIP');
+    if (savedIP && savedIP.startsWith('100.')) {
+      hostWsUrl = `ws://${savedIP}:8080`;
+      console.log("호스트 연결: 저장된 Tailscale IP 사용:", hostWsUrl);
+    }
+    // 2순위: 현재 페이지가 Tailscale IP로 열려있으면 그것을 사용
+    else if (currentHostname.startsWith('100.')) {
       hostWsUrl = `ws://${currentHostname}:8080`;
-    } else {
-      // 저장된 Tailscale IP가 있으면 사용
-      const savedIP = localStorage.getItem('lastTailscaleIP');
-      if (savedIP && (savedIP.startsWith('100.') || /^(\d{1,3}\.){3}\d{1,3}$/.test(savedIP))) {
-        hostWsUrl = `ws://${savedIP}:8080`;
-      } else {
-        // localhost는 마지막 수단으로만 사용
-        hostWsUrl = "ws://localhost:8080";
-      }
+      // 저장된 IP로도 저장
+      localStorage.setItem('lastTailscaleIP', currentHostname);
+      console.log("호스트 연결: 현재 페이지의 Tailscale IP 사용:", hostWsUrl);
+    }
+    // 3순위: 현재 페이지가 일반 IP로 열려있으면 그것을 사용
+    else if (/^(\d{1,3}\.){3}\d{1,3}$/.test(currentHostname)) {
+      hostWsUrl = `ws://${currentHostname}:8080`;
+      console.log("호스트 연결: 현재 페이지의 IP 사용:", hostWsUrl);
+    }
+    // 4순위: localhost는 마지막 수단으로만 사용
+    else {
+      hostWsUrl = "ws://localhost:8080";
+      console.log("호스트 연결: localhost 사용 (마지막 수단)");
     }
 
     const div = document.createElement("div");
@@ -1688,8 +1699,8 @@
 
   // 몬스터 등급에 따른 경험치 배율 계산
   function getEnemyTierMultiplier(kind) {
-    // grunt: 등급 0, runner: 등급 1, tank: 등급 2
-    const tier = kind === "grunt" ? 0 : kind === "runner" ? 1 : kind === "tank" ? 2 : 0;
+    // grunt: 등급 0, runner: 등급 1, tank: 등급 2, boss: 등급 3
+    const tier = kind === "grunt" ? 0 : kind === "runner" ? 1 : kind === "tank" ? 2 : kind === "boss" ? 3 : 0;
     return Math.pow(1.5, tier); // 1.5^등급
   }
 
@@ -1720,6 +1731,13 @@
       speed = 42;
       damage = 18;
       r = 15;
+    }
+
+    if (kind === "boss") {
+      hp = 200;
+      speed = 50;
+      damage = 25;
+      r = 20;
     }
 
     enemies.push({
@@ -1836,6 +1854,7 @@
   // Timers
   let spawnAcc = 0;
   let lastTreasureChestTime = 0; // 마지막 보물상자 스폰 시간
+  let lastBossTime = 0; // 마지막 보스 스폰 시간
 
   function reset() {
     state.t = 0;
@@ -1860,6 +1879,8 @@
     floats.length = 0;
     treasureChests.length = 0;
     lastTreasureChestTime = 0;
+    lastBossTime = 0;
+    lastBossTime = 0;
 
     choosing = false;
     if (started) overlayEl.classList.add("hidden");
@@ -2398,6 +2419,12 @@
       lastTreasureChestTime = state.t;
     }
 
+    // 보스 스폰 (5분마다)
+    if (state.t - lastBossTime >= 300.0) {
+      spawnEnemy("boss");
+      lastBossTime = state.t;
+    }
+
     // Update treasure chests (플레이어와 충돌 체크)
     for (let i = treasureChests.length - 1; i >= 0; i--) {
       const chest = treasureChests[i];
@@ -2668,11 +2695,23 @@
       let fill = "rgba(255,77,109,0.9)";
       if (e.kind === "runner") fill = "rgba(255,142,76,0.9)";
       if (e.kind === "tank") fill = "rgba(255,77,109,0.65)";
+      if (e.kind === "boss") fill = "rgba(255,0,0,0.95)"; // 보스는 빨간색
 
       ctx.beginPath();
       ctx.fillStyle = fill;
       ctx.arc(sx, sy, e.r, 0, TAU);
       ctx.fill();
+
+      // 보스의 경우 "BOSS" 텍스트 표시
+      if (e.kind === "boss") {
+        ctx.save();
+        ctx.fillStyle = "rgba(255,255,255,1)";
+        ctx.font = "bold 14px ui-sans-serif, system-ui";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("BOSS", sx, sy);
+        ctx.restore();
+      }
 
       // HP bar (subtle)
       const pct = clamp(e.hp / e.hpMax, 0, 1);
@@ -2986,4 +3025,26 @@
     console.error("게임 초기화 오류:", error);
     if (msgEl) msgEl.textContent = "초기화 오류: " + error.message;
   }
+
+  // 브라우저 창이 닫힐 때 WebSocket 연결을 명시적으로 닫아서 서버가 종료되도록 함
+  function closeWebSocketConnection() {
+    if (ws) {
+      try {
+        // WebSocket이 열려있으면 정상 종료 코드(1000)로 닫기
+        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+          ws.close(1000, "Browser closing");
+          console.log("브라우저 종료: WebSocket 연결 종료");
+        }
+        ws = null;
+      } catch (e) {
+        console.error("WebSocket 종료 중 오류:", e);
+        ws = null;
+      }
+    }
+  }
+
+  // 여러 이벤트에 리스너 추가하여 더 확실하게 감지
+  window.addEventListener('beforeunload', closeWebSocketConnection);
+  window.addEventListener('pagehide', closeWebSocketConnection);
+  window.addEventListener('unload', closeWebSocketConnection);
 })();
