@@ -1,0 +1,35 @@
+﻿<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Mini Survivors</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="ui">
+    <div class="row">
+      <div class="title">Mini Survivors</div>
+      <div class="help">처음 화면에서 1(1인) / 2(2인) 선택 · 일시정지: P</div>
+    </div>
+    <div class="row">
+      <div id="hud"></div>
+      <div id="message"></div>
+    </div>
+    <button id="menuButton" class="menu-button hidden" title="메인 메뉴로 돌아가기">메뉴</button>
+  </div>
+
+  <canvas id="game" width="960" height="540" aria-label="game"></canvas>
+
+  <div id="overlay" class="hidden">
+    <div class="panel">
+      <div class="panelTitle" id="overlayTitle">레벨 업</div>
+      <div class="panelSub" id="overlaySub">업그레이드를 선택하세요</div>
+      <div id="choices" class="choices"></div>
+      <div class="panelHint">숫자키 1~3 또는 클릭</div>
+    </div>
+  </div>
+
+  <script src="main.js"></script>
+</body>
+</html>

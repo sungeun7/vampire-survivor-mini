@@ -1,0 +1,136 @@
+﻿:root{
+  --bg:#0b0f1a;
+  --panel:#0f1730;
+  --text:#e8eeff;
+  --muted:#9fb0d6;
+  --accent:#7c5cff;
+  --bad:#ff4d6d;
+  --good:#45ffb1;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;
+  background:radial-gradient(1200px 600px at 50% 20%, #141f45 0%, var(--bg) 55%, #070a12 100%);
+  color:var(--text);
+  font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans KR",Arial;
+  overflow:hidden;
+}
+#ui{
+  position:fixed;
+  left:16px; right:16px; top:12px;
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+  pointer-events:none;
+}
+.row{display:flex; align-items:center; justify-content:space-between; gap:12px}
+.title{font-weight:800; letter-spacing:.3px; font-size:18px; opacity:.95}
+.help{color:var(--muted); font-size:12px; opacity:.95}
+#hud{color:var(--text); font-size:13px; white-space:pre; line-height:1.35}
+#message{color:var(--muted); font-size:12px; text-align:right}
+
+#game{
+  display:block;
+  width:min(96vw, 1100px);
+  height:auto;
+  margin:74px auto 0;
+  border-radius:16px;
+  box-shadow: 0 20px 80px rgba(0,0,0,.55);
+  background: linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.01));
+  outline:1px solid rgba(255,255,255,.08);
+}
+
+#overlay{
+  position:fixed;
+  inset:0;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  /* Fallback first (for browsers without backdrop-filter support) */
+  background:rgba(0,0,0,.72);
+}
+@supports ((backdrop-filter: blur(6px)) or (-webkit-backdrop-filter: blur(6px))) {
+  #overlay{
+    background:rgba(0,0,0,.55);
+    -webkit-backdrop-filter: blur(6px);
+    backdrop-filter: blur(6px);
+  }
+}
+/* #overlay has higher specificity than .hidden, so ensure overlay can be hidden */
+#overlay.hidden{display:none}
+.panel{
+  width:min(620px, 92vw);
+  max-height:min(85vh, 800px);
+  background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.03));
+  border:1px solid rgba(255,255,255,.10);
+  border-radius:18px;
+  padding:18px;
+  box-shadow: 0 18px 90px rgba(0,0,0,.7);
+  display:flex;
+  flex-direction:column;
+  overflow:hidden;
+}
+.panelTitle{font-size:18px; font-weight:900; margin-bottom:6px; flex-shrink:0}
+.panelSub{color:var(--muted); font-size:13px; margin-bottom:12px; flex-shrink:0}
+.panelHint{color:var(--muted); font-size:12px; margin-top:10px; flex-shrink:0}
+.choices{
+  display:grid;
+  grid-template-columns:1fr;
+  gap:10px;
+  overflow-y:auto;
+  overflow-x:hidden;
+  flex:1;
+  min-height:0;
+  padding-right:4px;
+}
+.choices::-webkit-scrollbar{
+  width:6px;
+}
+.choices::-webkit-scrollbar-track{
+  background:rgba(0,0,0,.2);
+  border-radius:3px;
+}
+.choices::-webkit-scrollbar-thumb{
+  background:rgba(124,92,255,.4);
+  border-radius:3px;
+}
+.choices::-webkit-scrollbar-thumb:hover{
+  background:rgba(124,92,255,.6);
+}
+.choice{
+  pointer-events:auto;
+  cursor:pointer;
+  padding:12px 12px;
+  border-radius:14px;
+  background:rgba(15,23,48,.55);
+  border:1px solid rgba(255,255,255,.10);
+  transition: transform .08s ease, border-color .12s ease, background .12s ease;
+}
+.choice:hover{transform: translateY(-1px); border-color: rgba(124,92,255,.55); background:rgba(15,23,48,.72)}
+.choiceTitle{display:flex; align-items:baseline; justify-content:space-between; gap:8px; font-weight:800}
+.choiceDesc{color:var(--muted); font-size:12px; margin-top:6px; line-height:1.35}
+.badge{color:rgba(255,255,255,.85); font-size:12px; padding:2px 8px; border-radius:999px; background:rgba(124,92,255,.25); border:1px solid rgba(124,92,255,.35)}
+.kbd{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size:11px; opacity:.9}
+.menu-button{
+  position:fixed;
+  top:16px;
+  right:16px;
+  pointer-events:auto;
+  cursor:pointer;
+  padding:8px 16px;
+  border-radius:8px;
+  background:rgba(15,23,48,.75);
+  border:1px solid rgba(255,255,255,.15);
+  color:var(--text);
+  font-size:13px;
+  font-weight:600;
+  transition:transform .08s ease, border-color .12s ease, background .12s ease;
+  z-index:1000;
+}
+.menu-button:hover{
+  transform:translateY(-1px);
+  border-color:rgba(124,92,255,.55);
+  background:rgba(15,23,48,.9);
+}
+.menu-button.hidden{display:none}
