@@ -113,7 +113,7 @@ public class GameServer {
                     player.level = 1;
                     player.color = isHost ? "rgba(232,238,255,0.92)" : "rgba(124,92,255,0.95)";
                     player.damage = 9;
-                    player.fireRate = 3.2f;
+                    player.fireRate = 0.96f; // 70% 감소: 3.2 * 0.3
                     player.pierce = 0;
                     player.pickup = 70;
                     player.regen = 0;
@@ -186,6 +186,12 @@ public class GameServer {
                         clients.remove(clientId);
                         System.out.println("   남은 클라이언트 수: " + clients.size());
                         broadcastState(null);
+                        
+                        // 모든 클라이언트가 연결을 끊었으면 서버 종료
+                        if (clients.isEmpty()) {
+                            System.out.println("\n⚠️  모든 클라이언트가 연결을 끊었습니다. 서버를 종료합니다...");
+                            shutdownServer();
+                        }
                     }
                 }
             }
@@ -365,8 +371,20 @@ public class GameServer {
                     path = "/index.html";
                 }
                 
-                // 현재 작업 디렉토리 기준으로 파일 경로 설정
+                // JAR 파일 위치 또는 현재 작업 디렉토리 기준으로 파일 경로 설정
                 String currentDir = System.getProperty("user.dir");
+                // JAR 파일이 실행 중인 경우 JAR 파일이 있는 디렉토리 사용
+                try {
+                    String jarPath = GameServer.class.getProtectionDomain().getCodeSource().getLocation().toURI().getPath();
+                    if (jarPath != null && jarPath.endsWith(".jar")) {
+                        File jarFile = new File(jarPath);
+                        if (jarFile.exists()) {
+                            currentDir = jarFile.getParent();
+                        }
+                    }
+                } catch (Exception e) {
+                    // JAR 경로를 찾을 수 없으면 user.dir 사용
+                }
                 // path가 "/index.html" 형태이므로 첫 번째 '/'를 제거
                 String relativePath = path.startsWith("/") ? path.substring(1) : path;
                 Path filePath = Paths.get(currentDir, relativePath);
@@ -550,30 +568,34 @@ public class GameServer {
                 if (tailscaleIP != null) {
                     System.out.println("   또는: http://" + tailscaleIP + ":" + GAME_PORT);
                 }
+                shutdownServer();
+            }
+        }, 5000, 5000, TimeUnit.MILLISECONDS); // 5초마다 확인
+    }
+    
+    private static void shutdownServer() {
+        try {
+            // 스케줄러 종료
+            scheduler.shutdownNow();
+            // 서버 종료
+            if (wss != null) {
                 try {
-                    // 스케줄러 종료
-                    scheduler.shutdownNow();
-                    // 서버 종료
-                    if (wss != null) {
-                        try {
-                            wss.stop(50);
-                        } catch (Exception e) {
-                            // 무시
-                        }
-                    }
-                    if (httpServer != null) {
-                        httpServer.stop(0);
-                    }
-                    if (gameServer != null) {
-                        gameServer.stop(0);
-                    }
+                    wss.stop(50);
                 } catch (Exception e) {
                     // 무시
                 }
-                // 즉시 종료 (모든 스레드 강제 종료)
-                System.exit(0);
             }
-        }, 5000, 5000, TimeUnit.MILLISECONDS); // 5초마다 확인
+            if (httpServer != null) {
+                httpServer.stop(0);
+            }
+            if (gameServer != null) {
+                gameServer.stop(0);
+            }
+        } catch (Exception e) {
+            // 무시
+        }
+        // 즉시 종료 (모든 스레드 강제 종료)
+        System.exit(0);
     }
     
     private static void detectTailscaleIP() {

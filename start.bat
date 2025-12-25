@@ -201,7 +201,9 @@ if !SERVER_READY! equ 1 (
     if defined GAME_URL (
         if "!GAME_URL!" neq "" (
             echo Opening browser with Tailscale IP...
+            REM 기존 브라우저 창이 열려있어도 새 창으로 열기 (중복 방지)
             start "" "!GAME_URL!"
+            timeout /t 2 >nul
         ) else (
             echo.
             echo Browser not opened - Tailscale IP not available.

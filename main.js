@@ -254,7 +254,7 @@
     xpToNext: 18,
 
     damage: 9,
-    fireRate: 3.2, // shots per sec
+    fireRate: 0.96, // shots per sec (70% 감소: 3.2 * 0.3)
     angularSpeed: 8.0, // 칼 회전 속도 (rad/s)
     projSpeed: 420,
     pierce: 0,
@@ -719,6 +719,7 @@
   }
 
   function showHostMenu() {
+    console.log("showHostMenu called");
     overlayMode = "menu";
     overlayEl.classList.remove("hidden");
     if (overlayTitleEl) overlayTitleEl.textContent = "호스트 서버";
@@ -726,34 +727,21 @@
 
     choicesEl.innerHTML = "";
 
-    // Tailscale 설치 안내
-    const tailscaleInfo = document.createElement("div");
-    tailscaleInfo.className = "choice";
-    tailscaleInfo.style.marginBottom = "12px";
-    tailscaleInfo.style.opacity = "0.9";
-    tailscaleInfo.innerHTML = `
-      <div class="choiceTitle">
-        <div>📦 Tailscale 설치 필요</div>
-      </div>
-      <div class="choiceDesc">
-        Windows: <code style="background:rgba(0,0,0,.3);padding:2px 4px;border-radius:4px;">.\install-tailscale.ps1</code><br>
-        Linux/Mac: <code style="background:rgba(0,0,0,.3);padding:2px 4px;border-radius:4px;">./install-tailscale.sh</code>
-      </div>
-    `;
-    choicesEl.appendChild(tailscaleInfo);
-
-    // 호스트 연결 URL 결정: 현재 페이지의 hostname 사용 (Tailscale IP 또는 localhost)
+    // 호스트 연결 URL 결정: 현재 페이지의 hostname 사용 (Tailscale IP 사용 우선)
     const currentHostname = window.location.hostname;
-    let hostWsUrl = "ws://localhost:8080";
+    let hostWsUrl = null;
     
-    // 현재 페이지가 Tailscale IP로 열려있으면 그것을 사용
+    // 현재 페이지가 Tailscale IP나 일반 IP로 열려있으면 그것을 사용
     if (currentHostname.startsWith('100.') || /^(\d{1,3}\.){3}\d{1,3}$/.test(currentHostname)) {
       hostWsUrl = `ws://${currentHostname}:8080`;
     } else {
       // 저장된 Tailscale IP가 있으면 사용
       const savedIP = localStorage.getItem('lastTailscaleIP');
-      if (savedIP && savedIP.startsWith('100.')) {
+      if (savedIP && (savedIP.startsWith('100.') || /^(\d{1,3}\.){3}\d{1,3}$/.test(savedIP))) {
         hostWsUrl = `ws://${savedIP}:8080`;
+      } else {
+        // localhost는 마지막 수단으로만 사용
+        hostWsUrl = "ws://localhost:8080";
       }
     }
 
@@ -771,7 +759,7 @@
     `;
     choicesEl.appendChild(div);
 
-    // 뒤로가기 버튼 (서버 연결 전에만)
+    // 뒤로가기 버튼
     const backBtn = createBackButton(() => {
       if (ws) {
         ws.close();
@@ -782,7 +770,13 @@
     choicesEl.appendChild(backBtn);
 
     // 서버에 연결 (호스트) - Tailscale IP 또는 localhost 사용
-    connectToServer(hostWsUrl, true);
+    if (hostWsUrl) {
+      console.log("Connecting to server as host:", hostWsUrl);
+      connectToServer(hostWsUrl, true);
+    } else {
+      console.error("호스트 연결 URL을 결정할 수 없습니다.");
+      if (overlaySubEl) overlaySubEl.textContent = "오류: 연결 주소를 찾을 수 없습니다.";
+    }
   }
 
   // IP 주소를 자동으로 ws://와 :8080을 붙여서 완전한 URL로 변환
@@ -1311,9 +1305,10 @@
         isHost = data.isHost;
         console.log(`연결됨: ${myPlayerId} (${isHost ? "호스트" : "클라이언트"})`);
 
-        // Tailscale IP 정보 저장
-        if (data.tailscaleIP && isHost) {
+        // Tailscale IP 정보 저장 (호스트든 게스트든 저장)
+        if (data.tailscaleIP) {
           localStorage.setItem('lastTailscaleIP', data.tailscaleIP);
+          console.log("Tailscale IP 저장됨:", data.tailscaleIP);
         }
 
         if (isHost) {
@@ -2397,8 +2392,8 @@
       }
     }
 
-    // 보물상자 스폰 (1분마다)
-    if (state.t - lastTreasureChestTime >= 60.0) {
+    // 보물상자 스폰 (30초마다)
+    if (state.t - lastTreasureChestTime >= 30.0) {
       spawnTreasureChest();
       lastTreasureChestTime = state.t;
     }
@@ -2751,6 +2746,12 @@
       ctx.fillRect(16, baseY, barW * hp1, 8);
       ctx.strokeStyle = "rgba(255,255,255,0.12)";
       ctx.strokeRect(16, baseY, barW, 8);
+      
+      // HP 숫자 표시 (P1)
+      ctx.fillStyle = "rgba(232,238,255,0.95)";
+      ctx.font = "11px ui-sans-serif, system-ui";
+      ctx.textAlign = "center";
+      ctx.fillText(`${Math.floor(player1.hp)}/${Math.floor(player1.hpMax)}`, 16 + barW / 2, baseY + 6);
 
       if (multiplayer) {
         ctx.fillStyle = "rgba(0,0,0,0.28)";
@@ -2759,6 +2760,11 @@
         ctx.fillRect(16, baseY - 10, barW * hp2, 6);
         ctx.strokeStyle = "rgba(255,255,255,0.10)";
         ctx.strokeRect(16, baseY - 10, barW, 6);
+        
+        // HP 숫자 표시 (P2)
+        ctx.fillStyle = "rgba(232,238,255,0.9)";
+        ctx.font = "10px ui-sans-serif, system-ui";
+        ctx.fillText(`${Math.floor(player2.hp)}/${Math.floor(player2.hpMax)}`, 16 + barW / 2, baseY - 4);
       }
 
       // XP bar (shared)
@@ -2767,6 +2773,29 @@
       ctx.fillRect(16, H - 30, barW * xpPct, 6);
       ctx.strokeStyle = "rgba(255,255,255,0.10)";
       ctx.strokeRect(16, H - 30, barW, 6);
+      
+      // XP 숫자 표시
+      ctx.fillStyle = "rgba(232,238,255,0.9)";
+      ctx.font = "10px ui-sans-serif, system-ui";
+      ctx.fillText(`${Math.floor(player1.xp)}/${Math.floor(player1.xpToNext)}`, 16 + barW / 2, H - 24);
+      
+      // 대시 쿨다운 바
+      const dash1Pct = clamp((player1.dashCdMax - player1.dashCd) / player1.dashCdMax, 0, 1);
+      const dashY = H - 42;
+      ctx.fillStyle = "rgba(0,0,0,0.3)";
+      ctx.fillRect(16, dashY, barW, 5);
+      ctx.fillStyle = "rgba(255,165,0,0.6)";
+      ctx.fillRect(16, dashY, barW * dash1Pct, 5);
+      ctx.strokeStyle = "rgba(255,255,255,0.08)";
+      ctx.strokeRect(16, dashY, barW, 5);
+      
+      // 대시 쿨다운 숫자 표시
+      const dashTime = player1.dashCd > 0 ? player1.dashCd.toFixed(1) : "READY";
+      ctx.fillStyle = "rgba(232,238,255,0.85)";
+      ctx.font = "9px ui-sans-serif, system-ui";
+      ctx.fillText(dashTime, 16 + barW / 2, dashY + 4);
+      
+      ctx.textAlign = "left"; // 텍스트 정렬 초기화
     }
 
     // Floating text
@@ -2943,13 +2972,18 @@
   }
 
   // 첫 화면: 플레이어 선택 화면부터 시작
-  started = false;
-  choosing = false;
-  overlayMode = "menu";
-  state.paused = true;
-  reset();
-  // 오버레이를 명시적으로 표시
-  if (overlayEl) overlayEl.classList.remove("hidden");
-  showStartMenu();
-  requestAnimationFrame(frame);
+  try {
+    started = false;
+    choosing = false;
+    overlayMode = "menu";
+    state.paused = true;
+    reset();
+    // 오버레이를 명시적으로 표시
+    if (overlayEl) overlayEl.classList.remove("hidden");
+    showStartMenu();
+    requestAnimationFrame(frame);
+  } catch (error) {
+    console.error("게임 초기화 오류:", error);
+    if (msgEl) msgEl.textContent = "초기화 오류: " + error.message;
+  }
 })();
