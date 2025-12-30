@@ -728,7 +728,7 @@
 
     choicesEl.innerHTML = "";
 
-    // 호스트 연결 URL 결정: Tailscale IP 우선 사용
+    // 호스트 연결 URL 결정: Tailscale IP만 사용 (localhost 절대 사용 안함)
     const currentHostname = window.location.hostname;
     let hostWsUrl = null;
     
@@ -746,14 +746,15 @@
       console.log("호스트 연결: 현재 페이지의 Tailscale IP 사용:", hostWsUrl);
     }
     // 3순위: 현재 페이지가 일반 IP로 열려있으면 그것을 사용
-    else if (/^(\d{1,3}\.){3}\d{1,3}$/.test(currentHostname)) {
+    else if (/^(\d{1,3}\.){3}\d{1,3}$/.test(currentHostname) && !currentHostname.startsWith('127.')) {
       hostWsUrl = `ws://${currentHostname}:8080`;
       console.log("호스트 연결: 현재 페이지의 IP 사용:", hostWsUrl);
     }
-    // 4순위: localhost는 마지막 수단으로만 사용
+    // localhost는 사용하지 않음
     else {
-      hostWsUrl = "ws://localhost:8080";
-      console.log("호스트 연결: localhost 사용 (마지막 수단)");
+      console.error("호스트 연결: Tailscale IP를 찾을 수 없습니다. localhost는 사용하지 않습니다.");
+      if (overlaySubEl) overlaySubEl.textContent = "오류: Tailscale IP를 찾을 수 없습니다. 페이지를 Tailscale IP로 열어주세요.";
+      return; // 연결하지 않음
     }
 
     const div = document.createElement("div");
@@ -780,7 +781,7 @@
     });
     choicesEl.appendChild(backBtn);
 
-    // 서버에 연결 (호스트) - Tailscale IP 또는 localhost 사용
+    // 서버에 연결 (호스트) - Tailscale IP만 사용 (localhost 사용 안함)
     if (hostWsUrl) {
       console.log("Connecting to server as host:", hostWsUrl);
       connectToServer(hostWsUrl, true);
@@ -1439,7 +1440,7 @@
     reset();
   }
 
-  // 10단위 레벨업 시 능력치 직접 선택
+  // 5레벨 배수 레벨업 시 능력치 직접 선택
   function chooseStatUpgrade() {
     if (!started) return;
     overlayMode = "levelup";
@@ -1447,21 +1448,22 @@
     state.paused = true;
     overlayEl.classList.remove("hidden");
     choicesEl.innerHTML = "";
+    currentChoices = []; // 능력치 선택 시 currentChoices 초기화 (키 입력 로직 분기용)
     playLevelUpSound();
 
     if (overlayTitleEl) overlayTitleEl.textContent = `레벨 ${player1.level} 달성!`;
-    if (overlaySubEl) overlaySubEl.textContent = "능력치를 선택하세요 (+1)";
+    if (overlaySubEl) overlaySubEl.textContent = "올리고 싶은 등급을 선택하세요 (1~5)";
 
-    // 능력치 목록
+    // 능력치 목록 (등급)
     const statUpgrades = [
-      { id: "dmg", title: "피해량", desc: "피해량 +1", apply: () => applyToAllPlayers((p) => (p.damage += 1)) },
-      { id: "hp", title: "최대 체력", desc: "최대 체력 +10", apply: () => applyToAllPlayers((p) => { p.hpMax += 10; p.hp = Math.min(p.hpMax, p.hp + 10); }) },
-      { id: "speed", title: "이동 속도", desc: "이동 속도 +10", apply: () => applyToAllPlayers((p) => (p.speed += 10)) },
-      { id: "fireRate", title: "공격 속도", desc: "공격 속도 +0.2", apply: () => applyToAllPlayers((p) => { 
+      { id: "dmg", title: "피해량", desc: "피해량 +1", badge: "DMG", apply: () => applyToAllPlayers((p) => (p.damage += 1)) },
+      { id: "hp", title: "최대 체력", desc: "최대 체력 +10", badge: "HP", apply: () => applyToAllPlayers((p) => { p.hpMax += 10; p.hp = Math.min(p.hpMax, p.hp + 10); }) },
+      { id: "speed", title: "이동 속도", desc: "이동 속도 +10", badge: "SPD", apply: () => applyToAllPlayers((p) => (p.speed += 10)) },
+      { id: "fireRate", title: "공격 속도", desc: "공격 속도 +0.2", badge: "FR", apply: () => applyToAllPlayers((p) => { 
         p.fireRate += 0.2;
         p.angularSpeed += 0.5;
       }) },
-      { id: "pickup", title: "흡수 범위", desc: "흡수 범위 +5", apply: () => applyToAllPlayers((p) => (p.pickup += 5)) },
+      { id: "hpRegen", title: "체력 회복", desc: "체력 회복 +0.5", badge: "REG", apply: () => applyToAllPlayers((p) => (p.regen += 0.5)) },
     ];
 
     statUpgrades.forEach((stat, idx) => {
@@ -1471,7 +1473,7 @@
       div.innerHTML = `
         <div class="choiceTitle">
           <div>${idx + 1}. ${stat.title}</div>
-          <div class="badge"><span class="kbd">${idx + 1}</span></div>
+          <div class="badge"><span class="kbd">${idx + 1}</span> ${stat.badge || ""}</div>
         </div>
         <div class="choiceDesc">${stat.desc}</div>
       `;
@@ -1503,8 +1505,9 @@
     // 레벨업 소리
     playLevelUpSound();
 
-    // 서버 관련 문구 제거
-    if (overlaySubEl) overlaySubEl.textContent = "";
+    // 레벨업 제목 표시
+    if (overlayTitleEl) overlayTitleEl.textContent = `레벨 ${player1.level} 달성!`;
+    if (overlaySubEl) overlaySubEl.textContent = "아이템을 선택하세요";
 
     // 캐릭터 타입에 맞는 업그레이드만 필터링
     const availableUpgrades = upgrades.filter((u) => {
@@ -1651,9 +1654,12 @@
       player1.xp -= player1.xpToNext;
       player1.level += 1;
       player1.xpToNext = Math.floor(player1.xpToNext * 1.28 + 8);
-      // 10단위 레벨(10, 20, 30...)일 때만 능력치 선택 화면 표시
-      if (player1.level % 10 === 0) {
+      // 5레벨 배수(5, 10, 15, 20...)일 때는 능력치 선택 화면 표시
+      if (player1.level % 5 === 0) {
         chooseStatUpgrade();
+      } else {
+        // 일반 레벨업 시에는 랜덤 3가지 아이템 선택 화면 표시
+        chooseUpgrades();
       }
     }
   }
@@ -1718,6 +1724,9 @@
 
     // Scale with time
     const s = 1 + state.t / 45;
+    // Scale with level: 레벨마다 1.2배 증가
+    const levelScale = Math.pow(1.2, player1.level - 1);
+    const totalScale = s * levelScale;
 
     if (kind === "runner") {
       hp = 18;
@@ -1746,10 +1755,10 @@
       vx: 0,
       vy: 0,
       r,
-      hp: hp * s,
-      hpMax: hp * s,
-      speed: speed * (0.9 + 0.1 * s),
-      damage,
+      hp: hp * totalScale,
+      hpMax: hp * totalScale,
+      speed: speed * (0.9 + 0.1 * totalScale),
+      damage: damage * totalScale,
       hitCd: 0,
       kind,
     });
@@ -1986,7 +1995,7 @@
         if (k === "2" || c === "Digit2" || c === "Numpad2") return pickUpgrade(1);
         if (k === "3" || c === "Digit3" || c === "Numpad3") return pickUpgrade(2);
       } else {
-        // 능력치 선택 (10단위 레벨업) - 5개 항목
+        // 능력치 선택 (레벨업) - 5개 항목
         const choices = choicesEl.querySelectorAll('.choice');
         if (choices.length === 5) {
           if (k === "1" || c === "Digit1" || c === "Numpad1") { choices[0].click(); return; }
@@ -2775,64 +2784,68 @@
 
       // HP bars (P1 / P2)
       const barW = W - 32;
-      const baseY = H - 18;
+      const baseY = H - 20;
       const hp1 = clamp(player1.hp / player1.hpMax, 0, 1);
       const hp2 = clamp(player2.hp / player2.hpMax, 0, 1);
+      const barHeight = 12; // 8 -> 12
 
       ctx.fillStyle = "rgba(0,0,0,0.35)";
-      ctx.fillRect(16, baseY, barW, 8);
+      ctx.fillRect(16, baseY, barW, barHeight);
       ctx.fillStyle = "rgba(69,255,177,0.75)";
-      ctx.fillRect(16, baseY, barW * hp1, 8);
+      ctx.fillRect(16, baseY, barW * hp1, barHeight);
       ctx.strokeStyle = "rgba(255,255,255,0.12)";
-      ctx.strokeRect(16, baseY, barW, 8);
+      ctx.strokeRect(16, baseY, barW, barHeight);
       
       // HP 숫자 표시 (P1)
       ctx.fillStyle = "rgba(232,238,255,0.95)";
-      ctx.font = "11px ui-sans-serif, system-ui";
+      ctx.font = "15px ui-sans-serif, system-ui"; // 11px -> 15px
       ctx.textAlign = "center";
-      ctx.fillText(`${Math.floor(player1.hp)}/${Math.floor(player1.hpMax)}`, 16 + barW / 2, baseY + 6);
+      ctx.fillText(`${Math.floor(player1.hp)}/${Math.floor(player1.hpMax)}`, 16 + barW / 2, baseY + barHeight / 2);
 
       if (multiplayer) {
+        const barHeight2 = 10; // 6 -> 10
         ctx.fillStyle = "rgba(0,0,0,0.28)";
-        ctx.fillRect(16, baseY - 10, barW, 6);
+        ctx.fillRect(16, baseY - 14, barW, barHeight2);
         ctx.fillStyle = "rgba(124,92,255,0.75)";
-        ctx.fillRect(16, baseY - 10, barW * hp2, 6);
+        ctx.fillRect(16, baseY - 14, barW * hp2, barHeight2);
         ctx.strokeStyle = "rgba(255,255,255,0.10)";
-        ctx.strokeRect(16, baseY - 10, barW, 6);
+        ctx.strokeRect(16, baseY - 14, barW, barHeight2);
         
         // HP 숫자 표시 (P2)
         ctx.fillStyle = "rgba(232,238,255,0.9)";
-        ctx.font = "10px ui-sans-serif, system-ui";
-        ctx.fillText(`${Math.floor(player2.hp)}/${Math.floor(player2.hpMax)}`, 16 + barW / 2, baseY - 4);
+        ctx.font = "13px ui-sans-serif, system-ui"; // 10px -> 13px
+        ctx.fillText(`${Math.floor(player2.hp)}/${Math.floor(player2.hpMax)}`, 16 + barW / 2, baseY - 9);
       }
 
       // XP bar (shared)
       const xpPct = clamp(player1.xp / player1.xpToNext, 0, 1);
+      const xpBarHeight = 10; // 6 -> 10
       ctx.fillStyle = "rgba(124,92,255,0.35)";
-      ctx.fillRect(16, H - 30, barW * xpPct, 6);
+      ctx.fillRect(16, H - 36, barW * xpPct, xpBarHeight);
       ctx.strokeStyle = "rgba(255,255,255,0.10)";
-      ctx.strokeRect(16, H - 30, barW, 6);
+      ctx.strokeRect(16, H - 36, barW, xpBarHeight);
       
       // XP 숫자 표시
       ctx.fillStyle = "rgba(232,238,255,0.9)";
-      ctx.font = "10px ui-sans-serif, system-ui";
-      ctx.fillText(`${Math.floor(player1.xp)}/${Math.floor(player1.xpToNext)}`, 16 + barW / 2, H - 24);
+      ctx.font = "13px ui-sans-serif, system-ui"; // 10px -> 13px
+      ctx.fillText(`${Math.floor(player1.xp)}/${Math.floor(player1.xpToNext)}`, 16 + barW / 2, H - 28);
       
       // 대시 쿨다운 바
       const dash1Pct = clamp((player1.dashCdMax - player1.dashCd) / player1.dashCdMax, 0, 1);
-      const dashY = H - 42;
+      const dashY = H - 50;
+      const dashBarHeight = 8; // 5 -> 8
       ctx.fillStyle = "rgba(0,0,0,0.3)";
-      ctx.fillRect(16, dashY, barW, 5);
+      ctx.fillRect(16, dashY, barW, dashBarHeight);
       ctx.fillStyle = "rgba(255,165,0,0.6)";
-      ctx.fillRect(16, dashY, barW * dash1Pct, 5);
+      ctx.fillRect(16, dashY, barW * dash1Pct, dashBarHeight);
       ctx.strokeStyle = "rgba(255,255,255,0.08)";
-      ctx.strokeRect(16, dashY, barW, 5);
+      ctx.strokeRect(16, dashY, barW, dashBarHeight);
       
       // 대시 쿨다운 숫자 표시
       const dashTime = player1.dashCd > 0 ? player1.dashCd.toFixed(1) : "READY";
       ctx.fillStyle = "rgba(232,238,255,0.85)";
-      ctx.font = "9px ui-sans-serif, system-ui";
-      ctx.fillText(dashTime, 16 + barW / 2, dashY + 4);
+      ctx.font = "12px ui-sans-serif, system-ui"; // 9px -> 12px
+      ctx.fillText(dashTime, 16 + barW / 2, dashY + dashBarHeight / 2);
       
       ctx.textAlign = "left"; // 텍스트 정렬 초기화
     }
@@ -3027,13 +3040,24 @@
   }
 
   // 브라우저 창이 닫힐 때 WebSocket 연결을 명시적으로 닫아서 서버가 종료되도록 함
+  let isClosing = false;
   function closeWebSocketConnection() {
+    if (isClosing) return;
+    isClosing = true;
+    
     if (ws) {
       try {
         // WebSocket이 열려있으면 정상 종료 코드(1000)로 닫기
-        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+        if (ws.readyState === WebSocket.OPEN) {
           ws.close(1000, "Browser closing");
           console.log("브라우저 종료: WebSocket 연결 종료");
+          // 종료 신호가 서버에 전달될 시간을 주기 위해 약간 대기
+          const startTime = Date.now();
+          while (Date.now() - startTime < 100 && ws.readyState !== WebSocket.CLOSED) {
+            // 100ms 대기하거나 연결이 닫힐 때까지
+          }
+        } else if (ws.readyState === WebSocket.CONNECTING) {
+          ws.close(1000, "Browser closing");
         }
         ws = null;
       } catch (e) {
@@ -3044,7 +3068,24 @@
   }
 
   // 여러 이벤트에 리스너 추가하여 더 확실하게 감지
-  window.addEventListener('beforeunload', closeWebSocketConnection);
-  window.addEventListener('pagehide', closeWebSocketConnection);
-  window.addEventListener('unload', closeWebSocketConnection);
+  window.addEventListener('beforeunload', function() {
+    closeWebSocketConnection();
+  }, false);
+  
+  window.addEventListener('pagehide', function() {
+    closeWebSocketConnection();
+  }, false);
+  
+  window.addEventListener('unload', function() {
+    closeWebSocketConnection();
+  }, false);
+  
+  // visibilitychange 이벤트도 추가 (탭 전환 시)
+  document.addEventListener('visibilitychange', function() {
+    if (document.hidden) {
+      // 페이지가 숨겨지면 연결 종료 (브라우저 종료 시에도 발생할 수 있음)
+      // 하지만 단순히 탭 전환일 수도 있으므로, 실제 종료인지 확인 필요
+      // 일단은 beforeunload 등에서 처리하도록 함
+    }
+  });
 })();

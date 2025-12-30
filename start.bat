@@ -3,19 +3,40 @@ setlocal enabledelayedexpansion
 
 REM Change to script directory
 cd /d "%~dp0" 2>nul
+if errorlevel 1 (
+    echo ERROR: Cannot change to script directory.
+    pause
+    exit /b 1
+)
 
 echo ========================================
 echo Mini Survivors - Server Startup
 echo ========================================
 echo.
+echo NOTE: For best results, run this script as Administrator
+echo       (Right-click -^> Run as administrator)
+echo       This allows automatic firewall rule configuration.
+echo.
 
-REM Step 1: Check Java (no installation, just verification)
+REM Step 1: Check Java
 echo Checking Java...
-java -version >nul 2>&1
+where java >nul 2>&1
 if errorlevel 1 (
     echo.
     echo ========================================
     echo ERROR: Java is not installed or not in PATH.
+    echo ========================================
+    echo.
+    echo Please run setup.bat first to install Java and Maven.
+    echo.
+    goto :error_exit
+)
+
+java -version >nul 2>&1
+if errorlevel 1 (
+    echo.
+    echo ========================================
+    echo ERROR: Java is not working properly.
     echo ========================================
     echo.
     echo Please run setup.bat first to install Java and Maven.
@@ -107,7 +128,7 @@ if not exist "target\mini-survivors-server-1.0.0.jar" (
     goto :error_exit
 )
 
-REM Try to add firewall rules for the server ports (requires admin)
+REM Try to add firewall rules for the server ports
 echo Checking Windows Firewall rules...
 set FIREWALL_RULES_ADDED=0
 netsh advfirewall firewall show rule name="Mini Survivors Server Port 5173" >nul 2>&1
@@ -118,7 +139,7 @@ if errorlevel 1 (
         echo Firewall rule added for port 5173.
         set FIREWALL_RULES_ADDED=1
     ) else (
-        echo Warning: Could not add firewall rule for port 5173 ^(admin rights required^)
+        echo Warning: Could not add firewall rule for port 5173 (admin rights required)
     )
 ) else (
     echo Firewall rule for port 5173 already exists.
@@ -132,7 +153,7 @@ if errorlevel 1 (
         echo Firewall rule added for port 8080.
         set FIREWALL_RULES_ADDED=1
     ) else (
-        echo Warning: Could not add firewall rule for port 8080 ^(admin rights required^)
+        echo Warning: Could not add firewall rule for port 8080 (admin rights required)
     )
 ) else (
     echo Firewall rule for port 8080 already exists.
@@ -144,18 +165,44 @@ if !FIREWALL_RULES_ADDED! equ 0 (
     echo.
 )
 
-REM Get Tailscale IP (host will use this, NOT localhost)
+REM Get Tailscale IP
 set "TAILSCALE_IP="
 set "GAME_URL="
 where tailscale >nul 2>&1
 if not errorlevel 1 (
     for /f "delims=" %%i in ('tailscale ip 2^>nul') do (
         set "TAILSCALE_IP=%%i"
-        set "GAME_URL=http://!TAILSCALE_IP!:5173"
+        if "!TAILSCALE_IP!" neq "" (
+            REM Skip localhost and 127.x.x.x - only accept valid Tailscale IP
+            echo !TAILSCALE_IP! | findstr /i /c:"localhost" >nul 2>&1
+            if errorlevel 1 (
+                echo !TAILSCALE_IP! | findstr /c:"127\." >nul 2>&1
+                if errorlevel 1 (
+                    REM Set GAME_URL only if it's not localhost or 127.x.x.x
+                    set "GAME_URL=http://!TAILSCALE_IP!:5173"
+                    echo Tailscale IP detected: !TAILSCALE_IP!
+                ) else (
+                    echo Skipping 127.x.x.x IP address.
+                )
+            ) else (
+                echo Skipping localhost IP address.
+            )
+        )
         goto :tailscale_found
     )
 )
 :tailscale_found
+
+REM Display detected IP info
+if defined GAME_URL (
+    echo Detected IP: !GAME_URL!
+) else (
+    echo No IP detected - browser will not open automatically.
+)
+
+REM Do NOT use local IP as fallback - only Tailscale IP
+REM (Removed to prevent localhost/127.x.x.x connections)
+:ip_found
 
 echo ========================================
 echo Starting server...
@@ -165,6 +212,16 @@ echo Server will start in a separate window.
 echo.
 if defined TAILSCALE_IP (
     if "!TAILSCALE_IP!" neq "" (
+        REM Ensure GAME_URL is set if TAILSCALE_IP is available (skip localhost/127.x.x.x)
+        if not defined GAME_URL (
+            echo !TAILSCALE_IP! | findstr /i /c:"localhost" >nul 2>&1
+            if errorlevel 1 (
+                echo !TAILSCALE_IP! | findstr /c:"127\." >nul 2>&1
+                if errorlevel 1 (
+                    set "GAME_URL=http://!TAILSCALE_IP!:5173"
+                )
+            )
+        )
         echo Host will connect using Tailscale IP: http://!TAILSCALE_IP!:5173
         echo Browser will open automatically when server is ready.
         echo.
@@ -189,11 +246,11 @@ REM Start server in a separate window
 echo Starting Java server...
 start "Mini Survivors Server" java -jar target\mini-survivors-server-1.0.0.jar
 
-REM Wait for server to start (check if port is listening)
+REM Wait for server to start
 echo Waiting for server to start...
 set SERVER_READY=0
 for /l %%i in (1,1,30) do (
-    timeout /t 1 >nul
+    timeout /t 1 >nul 2>&1
     netstat -an | findstr ":5173" | findstr "LISTENING" >nul 2>&1
     if not errorlevel 1 (
         echo Server is ready!
@@ -203,35 +260,52 @@ for /l %%i in (1,1,30) do (
 )
 :server_ready
 
-REM Open browser only if Tailscale IP is available (NO localhost)
+REM Open browser ONCE if server is ready and URL is available
+echo.
+echo ========================================
+echo Browser Opening Check
+echo ========================================
+echo SERVER_READY: !SERVER_READY!
+echo GAME_URL: !GAME_URL!
+echo TAILSCALE_IP: !TAILSCALE_IP!
+echo.
+set "BROWSER_OPENED=0"
 if !SERVER_READY! equ 1 (
     if defined GAME_URL (
         if "!GAME_URL!" neq "" (
-            REM localhost 포함 여부 확인 (localhost로 열지 않음)
-            echo !GAME_URL! | findstr /i "localhost" >nul 2>&1
-            if errorlevel 1 (
-                REM localhost가 아니면 브라우저 열기
-                echo Opening browser with Tailscale IP...
-                start "" "!GAME_URL!"
-                timeout /t 2 >nul
+            echo Checking URL: !GAME_URL!
+            REM Check for localhost or 127.x.x.x - reject these
+            echo !GAME_URL! | findstr /i /c:"localhost" >nul 2>&1
+            if not errorlevel 1 (
+                echo REJECTED: localhost detected
             ) else (
-                echo.
-                echo Browser not opened - localhost URL detected.
-                echo Please connect manually using your Tailscale IP.
-                echo.
+                echo !GAME_URL! | findstr /c:"127\." >nul 2>&1
+                if not errorlevel 1 (
+                    echo REJECTED: 127.x.x.x detected
+                ) else (
+                    REM Check if it contains http://100. (Tailscale IP)
+                    echo !GAME_URL! | findstr /c:"http://100." >nul 2>&1
+                    if not errorlevel 1 (
+                        echo APPROVED: Valid Tailscale IP URL
+                        echo Opening browser: !GAME_URL!
+                        start "" "!GAME_URL!"
+                        set "BROWSER_OPENED=1"
+                        timeout /t 2 >nul 2>&1
+                        echo Browser command executed.
+                    ) else (
+                        echo REJECTED: URL does not contain http://100.x.x.x
+                    )
+                )
             )
         ) else (
-            echo.
-            echo Browser not opened - Tailscale IP not available.
-            echo Please connect manually to your server IP.
-            echo.
+            echo Browser NOT opened - GAME_URL is empty.
         )
     ) else (
-        echo.
-        echo Browser not opened - Tailscale IP not available.
-        echo Please connect manually to your server IP.
-        echo.
+        echo Browser NOT opened - GAME_URL not defined.
     )
+) else (
+    echo Browser NOT opened - Server not ready.
+)
 ) else (
     echo.
     echo WARNING: Server may not be fully started yet.

@@ -187,10 +187,18 @@ public class GameServer {
                         System.out.println("   남은 클라이언트 수: " + clients.size());
                         broadcastState(null);
                         
-                        // 모든 클라이언트가 연결을 끊었으면 서버 종료
+                        // 모든 클라이언트가 연결을 끊었으면 즉시 서버 종료
                         if (clients.isEmpty()) {
                             System.out.println("\n⚠️  모든 클라이언트가 연결을 끊었습니다. 서버를 종료합니다...");
-                            shutdownServer();
+                            // 즉시 종료 (별도 스레드에서 실행하여 onClose 핸들러가 완료되도록)
+                            new Thread(() -> {
+                                try {
+                                    Thread.sleep(200); // 200ms 대기하여 종료 신호가 전달되도록
+                                } catch (InterruptedException e) {
+                                    Thread.currentThread().interrupt();
+                                }
+                                shutdownServer();
+                            }, "ServerShutdownThread").start();
                         }
                     }
                 }
