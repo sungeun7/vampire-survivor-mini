@@ -76,10 +76,7 @@ npm start
 Windows 방화벽이 포트 8080을 차단하고 있을 가능성이 높습니다.
 
 **자동 설정 (권장):**
-```powershell
-# PowerShell을 관리자 권한으로 실행 후:
-.\fix-firewall.ps1
-```
+`start.bat`를 실행하면 자동으로 방화벽 규칙이 추가됩니다. (관리자 권한으로 실행 권장)
 
 **수동 설정:**
 ```powershell
