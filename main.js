@@ -43,20 +43,20 @@
   // 사운드 효과 생성 함수
   function playSound(frequency, duration, type = "sine", volume = 0.1) {
     if (!audioContext) return;
-    
+
     try {
       const oscillator = audioContext.createOscillator();
       const gainNode = audioContext.createGain();
-      
+
       oscillator.connect(gainNode);
       gainNode.connect(audioContext.destination);
-      
+
       oscillator.type = type;
       oscillator.frequency.value = frequency;
-      
+
       gainNode.gain.setValueAtTime(volume, audioContext.currentTime);
       gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + duration);
-      
+
       oscillator.start(audioContext.currentTime);
       oscillator.stop(audioContext.currentTime + duration);
     } catch (e) {
@@ -150,7 +150,7 @@
 
   const topScores = getTopScores();
   const bestTime = topScores.length > 0 ? (topScores[0].time || topScores[0]) : 0;
-  
+
   // 이름 입력 관련
   let waitingForRankName = null; // 1~3위일 때 이름 입력 대기 (rank: 0, 1, 2)
   let rankNameInput = "";
@@ -731,7 +731,7 @@
     // 호스트 연결 URL 결정: Tailscale IP만 사용 (localhost 절대 사용 안함)
     const currentHostname = window.location.hostname;
     let hostWsUrl = null;
-    
+
     // 1순위: 저장된 Tailscale IP (100.으로 시작하는 IP만)
     const savedIP = localStorage.getItem('lastTailscaleIP');
     if (savedIP && savedIP.startsWith('100.')) {
@@ -1459,7 +1459,7 @@
       { id: "dmg", title: "피해량", desc: "피해량 +1", badge: "DMG", apply: () => applyToAllPlayers((p) => (p.damage += 1)) },
       { id: "hp", title: "최대 체력", desc: "최대 체력 +10", badge: "HP", apply: () => applyToAllPlayers((p) => { p.hpMax += 10; p.hp = Math.min(p.hpMax, p.hp + 10); }) },
       { id: "speed", title: "이동 속도", desc: "이동 속도 +10", badge: "SPD", apply: () => applyToAllPlayers((p) => (p.speed += 10)) },
-      { id: "fireRate", title: "공격 속도", desc: "공격 속도 +0.2", badge: "FR", apply: () => applyToAllPlayers((p) => { 
+      { id: "fireRate", title: "공격 속도", desc: "공격 속도 +0.2", badge: "FR", apply: () => applyToAllPlayers((p) => {
         p.fireRate += 0.2;
         p.angularSpeed += 0.5;
       }) },
@@ -1482,7 +1482,7 @@
         choosing = false;
         state.paused = false;
         overlayEl.classList.add("hidden");
-        
+
         floats.push({
           x: player1.x,
           y: player1.y - 24,
@@ -1789,11 +1789,11 @@
         const sizeMultiplier = (from.projSize || 4) - 4; // 기본값 4를 빼서 증가분만 계산
         const length = baseLength + sizeMultiplier * 3.0; // 칼 크기에 따라 길이 결정 (더 큰 증가폭)
         const width = 3 + sizeMultiplier * 1.0; // 칼 크기에 따라 두께 결정 (더 큰 증가폭)
-        
+
         // 캐릭터 시야 방향을 기준으로 -45도에서 시작 (90도 범위의 시작점)
         const facingAngle = from.lastFacingAngle !== undefined ? from.lastFacingAngle : 0;
         const startAngle = facingAngle - Math.PI / 4; // -45도 (90도 범위의 시작)
-        
+
         swords.push({
           player: from,
           angle: 0, // 0 ~ 90도 범위에서 회전 (0도 = 시작점, 90도 = 끝점)
@@ -1853,7 +1853,7 @@
         });
       }
     }
-    
+
     // 총알 발사 소리 (총 캐릭터만)
     if (from.characterType === "gun") {
       playShootSound();
@@ -2035,7 +2035,7 @@
         return;
       }
     }
-    
+
     if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " ", "Enter"].includes(e.key)) e.preventDefault();
     setKey(e, true);
   });
@@ -2248,6 +2248,10 @@
     // Update remote projectiles
     for (let i = remoteProjectiles.length - 1; i >= 0; i--) {
       const p = remoteProjectiles[i];
+      if (!p) {
+        remoteProjectiles.splice(i, 1);
+        continue;
+      }
       p.life -= dt;
       p.x += p.vx * dt;
       p.y += p.vy * dt;
@@ -2261,7 +2265,15 @@
     // Update swords (칼 막대기)
     for (let i = swords.length - 1; i >= 0; i--) {
       const sword = swords[i];
+      if (!sword) {
+        swords.splice(i, 1);
+        continue;
+      }
       const p = sword.player;
+      if (!p) {
+        swords.splice(i, 1);
+        continue;
+      }
 
       // 플레이어가 죽었거나 게임이 끝났으면 막대기 제거
       if (p.hp <= 0 || state.gameOver) {
@@ -2300,7 +2312,7 @@
       // 막대기 회전 (90도 범위: 0도 ~ 90도, 1회성 공격)
       const maxAngle = Math.PI / 2; // 90도 (라디안)
       sword.angle += sword.angularSpeed * dt;
-      
+
       // 90도에 도달하면 공격 완료, 0.6초 쿨다운 시작
       if (sword.angle >= maxAngle) {
         sword.angle = maxAngle; // 90도에서 멈춤
@@ -2620,18 +2632,18 @@
       ctx.save();
       ctx.translate(sx, sy);
       ctx.rotate(state.t * 0.5); // 회전 애니메이션
-      
+
       // 보물상자 그리기 (노란색)
       ctx.fillStyle = "rgba(255,215,0,0.9)";
       ctx.fillRect(-chest.r, -chest.r, chest.r * 2, chest.r * 2);
       ctx.strokeStyle = "rgba(255,165,0,0.8)";
       ctx.lineWidth = 2;
       ctx.strokeRect(-chest.r, -chest.r, chest.r * 2, chest.r * 2);
-      
+
       // 보물상자 뚜껑 (살짝 열린 느낌)
       ctx.fillStyle = "rgba(255,200,0,0.9)";
       ctx.fillRect(-chest.r, -chest.r, chest.r * 2, chest.r * 0.4);
-      
+
       // 십자가 표시 (보물 표시)
       ctx.strokeStyle = "rgba(255,165,0,1)";
       ctx.lineWidth = 2;
@@ -2641,7 +2653,7 @@
       ctx.moveTo(0, -chest.r * 0.5);
       ctx.lineTo(0, chest.r * 0.5);
       ctx.stroke();
-      
+
       ctx.restore();
     }
 
@@ -2678,7 +2690,7 @@
     for (const sword of swords) {
       // 쿨다운 중이면 렌더링하지 않음
       if (sword.cooldown > 0 || sword.angle < 0) continue;
-      
+
       const p = sword.player;
       const [px, py] = worldToScreen(p.x, p.y);
       // 실제 각도 = 기준 각도 + 상대 각도
@@ -2795,7 +2807,7 @@
       ctx.fillRect(16, baseY, barW * hp1, barHeight);
       ctx.strokeStyle = "rgba(255,255,255,0.12)";
       ctx.strokeRect(16, baseY, barW, barHeight);
-      
+
       // HP 숫자 표시 (P1)
       ctx.fillStyle = "rgba(232,238,255,0.95)";
       ctx.font = "15px ui-sans-serif, system-ui"; // 11px -> 15px
@@ -2810,7 +2822,7 @@
         ctx.fillRect(16, baseY - 14, barW * hp2, barHeight2);
         ctx.strokeStyle = "rgba(255,255,255,0.10)";
         ctx.strokeRect(16, baseY - 14, barW, barHeight2);
-        
+
         // HP 숫자 표시 (P2)
         ctx.fillStyle = "rgba(232,238,255,0.9)";
         ctx.font = "13px ui-sans-serif, system-ui"; // 10px -> 13px
@@ -2824,12 +2836,12 @@
       ctx.fillRect(16, H - 36, barW * xpPct, xpBarHeight);
       ctx.strokeStyle = "rgba(255,255,255,0.10)";
       ctx.strokeRect(16, H - 36, barW, xpBarHeight);
-      
+
       // XP 숫자 표시
       ctx.fillStyle = "rgba(232,238,255,0.9)";
       ctx.font = "13px ui-sans-serif, system-ui"; // 10px -> 13px
       ctx.fillText(`${Math.floor(player1.xp)}/${Math.floor(player1.xpToNext)}`, 16 + barW / 2, H - 28);
-      
+
       // 대시 쿨다운 바
       const dash1Pct = clamp((player1.dashCdMax - player1.dashCd) / player1.dashCdMax, 0, 1);
       const dashY = H - 50;
@@ -2840,13 +2852,13 @@
       ctx.fillRect(16, dashY, barW * dash1Pct, dashBarHeight);
       ctx.strokeStyle = "rgba(255,255,255,0.08)";
       ctx.strokeRect(16, dashY, barW, dashBarHeight);
-      
+
       // 대시 쿨다운 숫자 표시
       const dashTime = player1.dashCd > 0 ? player1.dashCd.toFixed(1) : "READY";
       ctx.fillStyle = "rgba(232,238,255,0.85)";
       ctx.font = "12px ui-sans-serif, system-ui"; // 9px -> 12px
       ctx.fillText(dashTime, 16 + barW / 2, dashY + dashBarHeight / 2);
-      
+
       ctx.textAlign = "left"; // 텍스트 정렬 초기화
     }
 
@@ -2873,7 +2885,7 @@
       const timeMinutes = Math.floor(state.t / 60);
       const timeSeconds = Math.floor(state.t % 60);
       const isNewRecord = state.t >= currentBest && state.t > 0;
-      
+
       // 1~3위인지 확인 (이름 입력 필요)
       let rank = -1;
       for (let i = 0; i < Math.min(3, currentScores.length); i++) {
@@ -2883,40 +2895,40 @@
           break;
         }
       }
-      
+
       // 이름 입력 중이면 이름 입력 UI 표시
       if (waitingForRankName !== null) {
         // 이름 입력 오버레이
         ctx.fillStyle = "rgba(0,0,0,0.8)";
         ctx.fillRect(0, 0, W, H);
-        
+
         ctx.fillStyle = "rgba(255,255,255,0.1)";
         ctx.fillRect(W / 2 - 200, H / 2 - 80, 400, 160);
         ctx.strokeStyle = "rgba(255,255,255,0.3)";
         ctx.strokeRect(W / 2 - 200, H / 2 - 80, 400, 160);
-        
+
         let y = H / 2 - 50;
         ctx.fillStyle = "rgba(232,238,255,0.95)";
         ctx.font = "800 20px ui-sans-serif, system-ui";
         ctx.fillText(`${waitingForRankName + 1}위 달성!`, W / 2 - 60, y);
         y += 30;
-        
+
         ctx.fillStyle = "rgba(159,176,214,0.95)";
         ctx.font = "14px ui-sans-serif, system-ui";
         ctx.fillText("이름을 입력하세요 (최대 10자)", W / 2 - 120, y);
         y += 25;
-        
+
         // 입력 필드 배경
         ctx.fillStyle = "rgba(15,23,48,0.8)";
         ctx.fillRect(W / 2 - 150, y, 300, 30);
         ctx.strokeStyle = "rgba(124,92,255,0.5)";
         ctx.strokeRect(W / 2 - 150, y, 300, 30);
-        
+
         // 입력된 텍스트
         ctx.fillStyle = "rgba(232,238,255,0.95)";
         ctx.font = "14px ui-sans-serif, system-ui";
         ctx.fillText(rankNameInput + (Math.floor(state.t * 2) % 2 === 0 ? "|" : ""), W / 2 - 140, y + 20);
-        
+
         y += 40;
         ctx.fillStyle = "rgba(159,176,214,0.7)";
         ctx.font = "12px ui-sans-serif, system-ui";
@@ -3044,7 +3056,7 @@
   function closeWebSocketConnection() {
     if (isClosing) return;
     isClosing = true;
-    
+
     if (ws) {
       try {
         // WebSocket이 열려있으면 정상 종료 코드(1000)로 닫기
@@ -3071,15 +3083,15 @@
   window.addEventListener('beforeunload', function() {
     closeWebSocketConnection();
   }, false);
-  
+
   window.addEventListener('pagehide', function() {
     closeWebSocketConnection();
   }, false);
-  
+
   window.addEventListener('unload', function() {
     closeWebSocketConnection();
   }, false);
-  
+
   // visibilitychange 이벤트도 추가 (탭 전환 시)
   document.addEventListener('visibilitychange', function() {
     if (document.hidden) {

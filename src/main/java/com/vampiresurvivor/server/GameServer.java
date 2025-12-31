@@ -23,74 +23,74 @@ public class GameServer {
     private static final int WS_PORT = 8080;
     private static final int HTTP_PORT = 8081;
     private static int GAME_PORT = 5173;
-    
+
     private static String tailscaleIP = null;
     private static final Map<String, ClientInfo> clients = new ConcurrentHashMap<>();
     private static final GameState gameState = new GameState();
     private static int nextPlayerId = 1;
     private static String hostId = null;
     private static long lastRequestTime = System.currentTimeMillis();
-    
+
     private static WebSocketServer wss;
     private static HttpServer httpServer;
     private static HttpServer gameServer;
     private static final Gson gson = new Gson();
     private static final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2);
-    
+
     public static void main(String[] args) {
         System.out.println("Starting Mini Survivors server...\n");
-        
+
         // Tailscale IP 감지
         detectTailscaleIP();
-        
+
         // WebSocket 서버 시작
         startWebSocketServer();
-        
+
         // HTTP 서버 시작 (IP 정보 제공)
         startHttpServer();
-        
+
         // 게임 파일 제공용 HTTP 서버 시작
         startGameServer();
-        
+
         // 브라우저 모니터링 시작
         startBrowserMonitoring();
-        
+
         // 서버 상태 주기적 출력
         scheduler.scheduleAtFixedRate(() -> {
             System.out.println(String.format("📊 서버 상태: %d명 연결 중, 게임 상태: %s",
                 clients.size(), gameState.started ? "진행 중" : "대기 중"));
         }, 30, 30, TimeUnit.SECONDS);
-        
+
         // Tailscale IP 주기적 재확인
         scheduler.scheduleAtFixedRate(() -> {
             detectTailscaleIP();
         }, 5, 5, TimeUnit.SECONDS);
     }
-    
+
     private static void startWebSocketServer() {
         wss = new WebSocketServer(new InetSocketAddress("0.0.0.0", WS_PORT)) {
             @Override
             public void onOpen(WebSocket conn, ClientHandshake handshake) {
                 String clientId = System.currentTimeMillis() + "-" + UUID.randomUUID().toString().substring(0, 9);
                 String clientIP = conn.getRemoteSocketAddress().getAddress().getHostAddress();
-                
+
                 // 마스터 결정: 첫 번째 클라이언트가 항상 마스터 (localhost든 Tailscale IP든 상관없이)
                 boolean isHost = clients.isEmpty();
-                
+
                 if (isHost) {
                     hostId = clientId;
                 }
-                
+
                 String playerId = "P" + nextPlayerId++;
                 clients.put(clientId, new ClientInfo(conn, playerId, isHost));
                 lastRequestTime = System.currentTimeMillis();
-                
+
                 System.out.println("\n✅ 클라이언트 연결 성공!");
                 System.out.println("   클라이언트 ID: " + clientId);
                 System.out.println("   플레이어 ID: " + playerId + (isHost ? " [HOST/MASTER]" : " [GUEST]"));
                 System.out.println("   연결 주소: " + clientIP);
                 System.out.println("   현재 연결된 클라이언트 수: " + clients.size());
-                
+
                 // 초기 상태 전송
                 JsonObject response = new JsonObject();
                 response.addProperty("type", "connected");
@@ -101,7 +101,7 @@ public class GameServer {
                 response.addProperty("tailscaleIP", tailscaleIP);
                 response.addProperty("wsUrl", tailscaleIP != null ? "ws://" + tailscaleIP + ":" + WS_PORT : null);
                 conn.send(response.toString());
-                
+
                 // 플레이어 추가
                 if (!gameState.players.containsKey(playerId)) {
                     PlayerData player = new PlayerData();
@@ -121,9 +121,9 @@ public class GameServer {
                     player.projCount = 1;
                     player.dashCd = 0;
                     player.dashCdMax = 1.1f;
-                    
+
                     gameState.players.put(playerId, player);
-                    
+
                     // 게스트가 들어오면 게임 시작
                     if (!isHost && gameState.players.size() > 1) {
                         if (!gameState.started) {
@@ -140,10 +140,10 @@ public class GameServer {
                         gameState.gameOver = false;
                         System.out.println("🎮 게스트가 들어와서 게임 시작 (총 " + gameState.players.size() + "명)");
                     }
-                    
+
                     broadcastState(null);
                 }
-                
+
                 // Keepalive
                 scheduler.scheduleAtFixedRate(() -> {
                     if (conn.isOpen()) {
@@ -151,7 +151,7 @@ public class GameServer {
                     }
                 }, 30, 30, TimeUnit.SECONDS);
             }
-            
+
             @Override
             public void onClose(WebSocket conn, int code, String reason, boolean remote) {
                 String clientId = findClientId(conn);
@@ -160,9 +160,9 @@ public class GameServer {
                     if (client != null) {
                         System.out.println("\n❌ 클라이언트 연결 종료: " + clientId + " (" + client.playerId + ")");
                         System.out.println("   종료 코드: " + code + ", 이유: " + (reason != null ? reason : "없음"));
-                        
+
                         gameState.players.remove(client.playerId);
-                        
+
                         if (clientId.equals(hostId)) {
                             System.out.println("⚠️  호스트가 연결을 끊었습니다.");
                             Optional<Map.Entry<String, ClientInfo>> remaining = clients.entrySet().stream()
@@ -172,7 +172,7 @@ public class GameServer {
                                 hostId = remaining.get().getKey();
                                 remaining.get().getValue().isHost = true;
                                 System.out.println("   새 호스트: " + hostId + " (" + remaining.get().getValue().playerId + ")");
-                                
+
                                 JsonObject msg = new JsonObject();
                                 msg.addProperty("type", "hostChanged");
                                 msg.addProperty("newHostId", hostId);
@@ -182,11 +182,11 @@ public class GameServer {
                                 gameState.started = false;
                             }
                         }
-                        
+
                         clients.remove(clientId);
                         System.out.println("   남은 클라이언트 수: " + clients.size());
                         broadcastState(null);
-                        
+
                         // 모든 클라이언트가 연결을 끊었으면 즉시 서버 종료
                         if (clients.isEmpty()) {
                             System.out.println("\n⚠️  모든 클라이언트가 연결을 끊었습니다. 서버를 종료합니다...");
@@ -203,19 +203,19 @@ public class GameServer {
                     }
                 }
             }
-            
+
             @Override
             public void onMessage(WebSocket conn, String message) {
                 lastRequestTime = System.currentTimeMillis();
-                
+
                 try {
                     JsonObject data = gson.fromJson(message, JsonObject.class);
                     String type = data.get("type").getAsString();
                     String clientId = findClientId(conn);
                     ClientInfo client = clientId != null ? clients.get(clientId) : null;
-                    
+
                     if (client == null) return;
-                    
+
                     switch (type) {
                         case "playerUpdate":
                             // 모든 플레이어가 자신의 플레이어 데이터를 업데이트할 수 있음
@@ -230,7 +230,7 @@ public class GameServer {
                                 }
                             }
                             break;
-                            
+
                         case "startGame":
                             // 호스트가 게임을 시작할 수 있음 (1명 이상, 솔로 플레이 포함)
                             if (client.isHost && gameState.players.size() >= 1) {
@@ -242,7 +242,7 @@ public class GameServer {
                                 broadcastState(null);
                             }
                             break;
-                            
+
                         case "reset":
                             if (client.isHost) {
                                 gameState.t = 0;
@@ -264,7 +264,7 @@ public class GameServer {
                                 broadcastState(null);
                             }
                             break;
-                            
+
                         case "levelUp":
                             // 모든 플레이어가 자신의 레벨을 업데이트할 수 있음
                             String levelUpPlayerId = data.get("playerId").getAsString();
@@ -276,7 +276,7 @@ public class GameServer {
                                 }
                             }
                             break;
-                            
+
                         case "projectile":
                             // 모든 플레이어가 자신의 투사체를 브로드캐스트할 수 있음
                             if (data.has("playerId") && data.has("projectile")) {
@@ -297,7 +297,7 @@ public class GameServer {
                     e.printStackTrace();
                 }
             }
-            
+
             @Override
             public void onError(WebSocket conn, Exception ex) {
                 String clientId = findClientId(conn);
@@ -308,7 +308,7 @@ public class GameServer {
                 System.err.println("   오류 메시지: " + ex.getMessage());
                 ex.printStackTrace();
             }
-            
+
             @Override
             public void onStart() {
                 System.out.println("\n✅ WebSocket 서버가 포트 " + WS_PORT + "에서 리스닝 중입니다.");
@@ -325,19 +325,19 @@ public class GameServer {
                 System.out.println("\n📡 서버가 모든 인터페이스에서 연결을 기다리는 중...\n");
             }
         };
-        
+
         wss.start();
     }
-    
+
     private static void startHttpServer() {
         try {
             httpServer = HttpServer.create(new InetSocketAddress("0.0.0.0", HTTP_PORT), 0);
-            
+
             // IP 정보 제공 핸들러
             com.sun.net.httpserver.HttpHandler ipHandler = exchange -> {
                 exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
                 exchange.getResponseHeaders().set("Content-Type", "application/json");
-                
+
                 JsonObject response = new JsonObject();
                 response.addProperty("success", true);
                 response.addProperty("tailscaleIP", tailscaleIP);
@@ -345,16 +345,16 @@ public class GameServer {
                 response.addProperty("wsUrl", tailscaleIP != null ? "ws://" + tailscaleIP + ":" + WS_PORT : null);
                 response.addProperty("localUrl", "ws://localhost:" + WS_PORT);
                 response.addProperty("timestamp", System.currentTimeMillis());
-                
+
                 String json = gson.toJson(response);
                 exchange.sendResponseHeaders(200, json.getBytes().length);
                 exchange.getResponseBody().write(json.getBytes());
                 exchange.close();
             };
-            
+
             httpServer.createContext("/ip", ipHandler);
             httpServer.createContext("/api/ip", ipHandler);
-            
+
             httpServer.setExecutor(null);
             httpServer.start();
             System.out.println("📡 HTTP 서버 시작: http://localhost:" + HTTP_PORT + "/ip (IP 정보 제공)");
@@ -363,22 +363,22 @@ public class GameServer {
             e.printStackTrace();
         }
     }
-    
+
     private static void startGameServer() {
         startGameServer(GAME_PORT);
     }
-    
+
     private static void startGameServer(int port) {
         try {
             gameServer = HttpServer.create(new InetSocketAddress("0.0.0.0", port), 0);
             gameServer.createContext("/", exchange -> {
                 lastRequestTime = System.currentTimeMillis();
-                
+
                 String path = exchange.getRequestURI().getPath();
                 if (path.equals("/")) {
                     path = "/index.html";
                 }
-                
+
                 // JAR 파일 위치 또는 현재 작업 디렉토리 기준으로 파일 경로 설정
                 String currentDir = System.getProperty("user.dir");
                 // JAR 파일이 실행 중인 경우 JAR 파일이 있는 디렉토리 사용
@@ -396,12 +396,12 @@ public class GameServer {
                 // path가 "/index.html" 형태이므로 첫 번째 '/'를 제거
                 String relativePath = path.startsWith("/") ? path.substring(1) : path;
                 Path filePath = Paths.get(currentDir, relativePath);
-                
+
                 // 디버깅 정보 출력
                 System.out.println("📄 파일 요청: " + path + " -> " + filePath.toAbsolutePath());
-                
+
                 String contentType = getContentType(filePath.toString());
-                
+
                 try {
                     if (Files.exists(filePath) && Files.isRegularFile(filePath)) {
                         byte[] content = Files.readAllBytes(filePath);
@@ -426,17 +426,17 @@ public class GameServer {
                     exchange.close();
                 }
             });
-            
+
             gameServer.setExecutor(null);
             gameServer.start();
             GAME_PORT = port;
-            
+
             // 실제 바인딩 주소 확인
             InetSocketAddress bindAddress = gameServer.getAddress();
             System.out.println("🎮 게임 서버 시작:");
             System.out.println("   바인딩 주소: " + bindAddress.getHostString() + ":" + bindAddress.getPort());
             System.out.println("   로컬 주소: http://localhost:" + GAME_PORT);
-            
+
             // 모든 네트워크 인터페이스 정보 출력
             try {
                 Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
@@ -463,15 +463,15 @@ public class GameServer {
             } catch (Exception e) {
                 System.err.println("   ⚠️  네트워크 인터페이스 정보를 가져올 수 없습니다: " + e.getMessage());
             }
-            
+
             if (tailscaleIP != null) {
                 System.out.println("\n💡 다른 플레이어는 이 주소로 접속하세요:");
                 System.out.println("   http://" + tailscaleIP + ":" + GAME_PORT);
             }
-            
-            // 브라우저 자동 열기는 start.bat에서 처리하므로 여기서는 안내만
-            // (중복 실행 방지)
-            
+
+            // 브라우저 자동 열기
+            openBrowser("http://localhost:" + GAME_PORT);
+
         } catch (IOException e) {
             if (e.getMessage().contains("Address already in use")) {
                 if (port < 5200) {
@@ -488,11 +488,11 @@ public class GameServer {
             }
         }
     }
-    
+
     private static void openBrowser(String url) {
         try {
             String os = System.getProperty("os.name").toLowerCase();
-            
+
             // Java Desktop API 사용 시도 (가장 안정적)
             if (Desktop.isDesktopSupported()) {
                 Desktop desktop = Desktop.getDesktop();
@@ -507,7 +507,7 @@ public class GameServer {
                     }
                 }
             }
-            
+
             // Desktop API가 실패하거나 지원되지 않을 경우 대체 방법 사용
             ProcessBuilder pb;
             if (os.contains("win")) {
@@ -546,27 +546,27 @@ public class GameServer {
             System.out.println("   오류: " + e.getMessage());
         }
     }
-    
+
     private static void startBrowserMonitoring() {
         final long serverStartTime = System.currentTimeMillis();
         scheduler.scheduleAtFixedRate(() -> {
             long timeSinceLastRequest = System.currentTimeMillis() - lastRequestTime;
             long timeSinceServerStart = System.currentTimeMillis() - serverStartTime;
             int activeClients = clients.size();
-            
+
             // 활성 클라이언트가 있으면 계속 실행 (솔로 플레이 포함)
             // WebSocket 연결이 유지되면 브라우저가 열려있는 것으로 간주
             if (activeClients > 0) {
                 // 클라이언트가 있으면 HTTP 요청 타임아웃 체크를 하지 않음
                 return;
             }
-            
+
             // 서버 시작 후 최소 2분(120초)는 대기 (브라우저가 열릴 충분한 시간 확보)
             // 브라우저 자동 열기가 실패할 수 있으므로 사용자가 수동으로 열 시간을 충분히 줌
             if (timeSinceServerStart < 120000) {
                 return;
             }
-            
+
             // 활성 클라이언트가 없고, 2분 동안 HTTP 요청이 없으면 브라우저가 닫힌 것으로 간주
             // (게임 서버는 주기적으로 리소스를 요청하므로, 요청이 없으면 브라우저가 닫힌 것)
             // 타임아웃을 2분으로 늘려서 사용자가 수동으로 브라우저를 열 시간 충분히 확보
@@ -580,7 +580,7 @@ public class GameServer {
             }
         }, 5000, 5000, TimeUnit.MILLISECONDS); // 5초마다 확인
     }
-    
+
     private static void shutdownServer() {
         try {
             // 스케줄러 종료
@@ -605,7 +605,7 @@ public class GameServer {
         // 즉시 종료 (모든 스레드 강제 종료)
         System.exit(0);
     }
-    
+
     private static void detectTailscaleIP() {
         try {
             Process process = new ProcessBuilder("tailscale", "ip").start();
@@ -621,7 +621,7 @@ public class GameServer {
         } catch (Exception e) {
             // Tailscale 명령 실패
         }
-        
+
         // 대체 방법: 네트워크 인터페이스에서 찾기
         try {
             Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
@@ -646,20 +646,20 @@ public class GameServer {
         } catch (Exception e) {
             // 인터페이스 검색 실패
         }
-        
+
         if (tailscaleIP == null) {
             System.out.println("⚠️  Tailscale IP를 자동으로 감지하지 못했습니다.");
             System.out.println("   수동 확인: tailscale ip");
         }
     }
-    
+
     private static void broadcastState(String excludeClientId) {
         JsonObject msg = new JsonObject();
         msg.addProperty("type", "state");
         msg.add("state", gameState.toJson());
         broadcast(msg.toString(), excludeClientId);
     }
-    
+
     private static void broadcast(String message, String excludeClientId) {
         clients.forEach((id, client) -> {
             if (!id.equals(excludeClientId) && client.conn.isOpen()) {
@@ -676,7 +676,7 @@ public class GameServer {
             }
         });
     }
-    
+
     private static String findClientId(WebSocket conn) {
         return clients.entrySet().stream()
             .filter(e -> e.getValue().conn.equals(conn))
@@ -684,7 +684,7 @@ public class GameServer {
             .findFirst()
             .orElse(null);
     }
-    
+
     private static void updatePlayerData(PlayerData player, JsonObject data) {
         if (data.has("x")) player.x = data.get("x").getAsFloat();
         if (data.has("y")) player.y = data.get("y").getAsFloat();
@@ -702,7 +702,7 @@ public class GameServer {
         if (data.has("projSize")) player.projSize = data.get("projSize").getAsFloat();
         if (data.has("projCount")) player.projCount = data.get("projCount").getAsInt();
     }
-    
+
     private static String getContentType(String filename) {
         String ext = filename.substring(filename.lastIndexOf('.'));
         switch (ext.toLowerCase()) {
@@ -724,19 +724,19 @@ public class GameServer {
             default: return "application/octet-stream";
         }
     }
-    
+
     static class ClientInfo {
         WebSocket conn;
         String playerId;
         boolean isHost;
-        
+
         ClientInfo(WebSocket conn, String playerId, boolean isHost) {
             this.conn = conn;
             this.playerId = playerId;
             this.isHost = isHost;
         }
     }
-    
+
     static class GameState {
         boolean started = false;
         double t = 0;
@@ -746,26 +746,26 @@ public class GameServer {
         List<Object> enemies = new ArrayList<>();
         List<Object> projectiles = new ArrayList<>();
         List<Object> orbs = new ArrayList<>();
-        
+
         JsonObject toJson() {
             JsonObject json = new JsonObject();
             json.addProperty("started", started);
             json.addProperty("t", t);
             json.addProperty("paused", paused);
             json.addProperty("gameOver", gameOver);
-            
+
             JsonObject playersJson = new JsonObject();
             players.forEach((id, player) -> playersJson.add(id, player.toJson()));
             json.add("players", playersJson);
-            
+
             json.add("enemies", gson.toJsonTree(enemies));
             json.add("projectiles", gson.toJsonTree(projectiles));
             json.add("orbs", gson.toJsonTree(orbs));
-            
+
             return json;
         }
     }
-    
+
     static class PlayerData {
         String id;
         float x, y, vx, vy;
@@ -773,7 +773,7 @@ public class GameServer {
         String color;
         float damage, fireRate, pickup, regen, projSize, dashCd, dashCdMax;
         int pierce, projCount;
-        
+
         JsonObject toJson() {
             JsonObject json = new JsonObject();
             json.addProperty("id", id);
