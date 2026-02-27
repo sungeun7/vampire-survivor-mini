@@ -22,14 +22,71 @@ REM Step 1: Check Java
 echo Checking Java...
 where java >nul 2>&1
 if errorlevel 1 (
-    echo.
-    echo ========================================
-    echo ERROR: Java is not installed or not in PATH.
-    echo ========================================
-    echo.
-    echo Please run setup.bat first to install Java and Maven.
-    echo.
-    goto :error_exit
+    REM Java not in PATH - try common install locations
+    set "JAVA_ADDED=0"
+    if defined JAVA_HOME (
+        if exist "!JAVA_HOME!\bin\java.exe" (
+            set "PATH=!JAVA_HOME!\bin;!PATH!"
+            set "JAVA_ADDED=1"
+        )
+    )
+    if "!JAVA_ADDED!"=="0" (
+        REM Microsoft OpenJDK (winget 등): dir로 jdk-* 폴더 찾기
+        for /f "delims=" %%d in ('dir /b /ad "%ProgramFiles%\Microsoft\jdk-*" 2^>nul') do (
+            if "!JAVA_ADDED!"=="0" (
+                set "JAVA_TRY=%ProgramFiles%\Microsoft\%%d"
+                if exist "!JAVA_TRY!\bin\java.exe" (
+                    set "PATH=!JAVA_TRY!\bin;!PATH!"
+                    set "JAVA_ADDED=1"
+                )
+            )
+        )
+    )
+    if "!JAVA_ADDED!"=="0" (
+        for /f "delims=" %%d in ('dir /b /ad "%ProgramFiles%\Eclipse Adoptium\jdk-*" 2^>nul') do (
+            if "!JAVA_ADDED!"=="0" (
+                set "JAVA_TRY=%ProgramFiles%\Eclipse Adoptium\%%d"
+                if exist "!JAVA_TRY!\bin\java.exe" (
+                    set "PATH=!JAVA_TRY!\bin;!PATH!"
+                    set "JAVA_ADDED=1"
+                )
+            )
+        )
+    )
+    if "!JAVA_ADDED!"=="0" (
+        for /f "delims=" %%d in ('dir /b /ad "%ProgramFiles%\Java\jdk-*" 2^>nul') do (
+            if "!JAVA_ADDED!"=="0" (
+                set "JAVA_TRY=%ProgramFiles%\Java\%%d"
+                if exist "!JAVA_TRY!\bin\java.exe" (
+                    set "PATH=!JAVA_TRY!\bin;!PATH!"
+                    set "JAVA_ADDED=1"
+                )
+            )
+        )
+    )
+    if "!JAVA_ADDED!"=="0" (
+        REM Program Files (x86) 경로도 시도
+        for /f "delims=" %%d in ('dir /b /ad "%ProgramFiles(x86)%\Microsoft\jdk-*" 2^>nul') do (
+            if "!JAVA_ADDED!"=="0" (
+                set "JAVA_TRY=%ProgramFiles(x86)%\Microsoft\%%d"
+                if exist "!JAVA_TRY!\bin\java.exe" (
+                    set "PATH=!JAVA_TRY!\bin;!PATH!"
+                    set "JAVA_ADDED=1"
+                )
+            )
+        )
+    )
+    where java >nul 2>&1
+    if errorlevel 1 (
+        echo.
+        echo ========================================
+        echo ERROR: Java is not installed or not in PATH.
+        echo ========================================
+        echo.
+        echo Please run setup.bat first to install Java and Maven.
+        echo.
+        goto :error_exit
+    )
 )
 
 java -version >nul 2>&1
@@ -52,9 +109,9 @@ REM Step 2: Build JAR if needed
 if not exist "target\mini-survivors-server-1.0.0.jar" (
     echo JAR file not found. Starting build...
     echo.
-    
+
     set BUILD_SUCCESS=0
-    
+
     REM Try Maven Wrapper first if available and properly configured
     if exist "mvnw.cmd" (
         if exist ".mvn\wrapper\maven-wrapper.properties" (
@@ -67,7 +124,7 @@ if not exist "target\mini-survivors-server-1.0.0.jar" (
             )
         )
     )
-    
+
     REM Use system Maven if wrapper failed, not available, or not configured
     if !BUILD_SUCCESS! equ 0 (
         REM Check if portable Maven exists
@@ -83,7 +140,7 @@ if not exist "target\mini-survivors-server-1.0.0.jar" (
                 echo Using system Maven...
             )
         )
-        
+
         if not defined MAVEN_CMD (
             echo.
             echo ========================================
@@ -94,14 +151,14 @@ if not exist "target\mini-survivors-server-1.0.0.jar" (
             echo.
             goto :error_exit
         )
-        
+
         echo Building with Maven...
         call "!MAVEN_CMD!" clean package -DskipTests
         if not errorlevel 1 (
             set BUILD_SUCCESS=1
         )
     )
-    
+
     REM Check if build succeeded
     if !BUILD_SUCCESS! equ 0 (
         echo.
@@ -111,7 +168,7 @@ if not exist "target\mini-survivors-server-1.0.0.jar" (
         echo.
         goto :error_exit
     )
-    
+
     echo.
     echo Build completed successfully!
     echo.
@@ -193,15 +250,16 @@ if not errorlevel 1 (
 )
 :tailscale_found
 
-REM Display detected IP info
-if defined GAME_URL (
-    echo Detected IP: !GAME_URL!
-) else (
-    echo No IP detected - browser will not open automatically.
+REM If no Tailscale IP, use localhost for local play
+if not defined GAME_URL (
+    set "GAME_URL=http://localhost:5173"
+    echo No Tailscale IP - using localhost for local play.
 )
 
-REM Do NOT use local IP as fallback - only Tailscale IP
-REM (Removed to prevent localhost/127.x.x.x connections)
+REM Display detected IP info
+if defined GAME_URL (
+    echo Game URL: !GAME_URL!
+)
 :ip_found
 
 echo ========================================
@@ -233,10 +291,8 @@ if defined TAILSCALE_IP (
         echo.
     )
 ) else (
-    echo ERROR: Tailscale is not installed or not in PATH.
-    echo Please install Tailscale first.
-    echo.
-    echo You can still start the server, but you need to manually connect.
+    echo Tailscale not found - using localhost. Browser will open when server is ready.
+    echo For remote play, install Tailscale: https://tailscale.com
     echo.
 )
 echo To stop the server, close the server window.
@@ -273,30 +329,11 @@ set "BROWSER_OPENED=0"
 if !SERVER_READY! equ 1 (
     if defined GAME_URL (
         if "!GAME_URL!" neq "" (
-            echo Checking URL: !GAME_URL!
-            REM Check for localhost or 127.x.x.x - reject these
-            echo !GAME_URL! | findstr /i /c:"localhost" >nul 2>&1
-            if not errorlevel 1 (
-                echo REJECTED: localhost detected
-            ) else (
-                echo !GAME_URL! | findstr /c:"127\." >nul 2>&1
-                if not errorlevel 1 (
-                    echo REJECTED: 127.x.x.x detected
-                ) else (
-                    REM Check if it contains http://100. (Tailscale IP)
-                    echo !GAME_URL! | findstr /c:"http://100." >nul 2>&1
-                    if not errorlevel 1 (
-                        echo APPROVED: Valid Tailscale IP URL
-                        echo Opening browser: !GAME_URL!
-                        start "" "!GAME_URL!"
-                        set "BROWSER_OPENED=1"
-                        timeout /t 2 >nul 2>&1
-                        echo Browser command executed.
-                    ) else (
-                        echo REJECTED: URL does not contain http://100.x.x.x
-                    )
-                )
-            )
+            echo Opening browser: !GAME_URL!
+            start "" "!GAME_URL!"
+            set "BROWSER_OPENED=1"
+            timeout /t 2 >nul 2>&1
+            echo Browser opened.
         ) else (
             echo Browser NOT opened - GAME_URL is empty.
         )

@@ -1,4 +1,4 @@
-﻿(() => {
+(() => {
   "use strict";
 
   /** @type {HTMLCanvasElement} */
@@ -26,6 +26,36 @@
     return [x / l, y / l];
   };
   const rand = (a, b) => a + Math.random() * (b - a);
+
+  // 정다각형 그리기 (cx, cy 중심, 반지름 r, 꼭짓점 수 n, 시작 각도)
+  function drawPolygon(ctx, cx, cy, r, n, startAngle = -Math.PI / 2) {
+    ctx.beginPath();
+    for (let i = 0; i <= n; i++) {
+      const a = startAngle + (TAU * i) / n;
+      const x = cx + r * Math.cos(a);
+      const y = cy + r * Math.sin(a);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+  }
+
+  // 별(5각 별) 그리기
+  function drawStar(ctx, cx, cy, r) {
+    const outer = r;
+    const inner = r * 0.4;
+    const points = 5;
+    ctx.beginPath();
+    for (let i = 0; i < points * 2; i++) {
+      const a = -Math.PI / 2 + (Math.PI * i) / points;
+      const rr = i % 2 === 0 ? outer : inner;
+      const x = cx + rr * Math.cos(a);
+      const y = cy + rr * Math.sin(a);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+  }
 
   function fmt(n) {
     if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
@@ -254,6 +284,7 @@
     xpToNext: 18,
 
     damage: 9,
+    defense: 0,
     fireRate: 2.24, // shots per sec (30% 감소: 3.2 * 0.7)
     angularSpeed: 8.0, // 칼 회전 속도 (rad/s)
     projSpeed: 420,
@@ -339,11 +370,11 @@
     {
       id: "as",
       title: "공격 속도",
-      desc: "+18% 속도",
+      desc: "+20% 속도",
       badge: "+AS",
       apply: () => applyToAllPlayers((p) => {
-        p.fireRate *= 1.18; // 총 캐릭터: 발사 속도 증가
-        p.angularSpeed *= 1.18; // 칼 캐릭터: 회전 속도 증가
+        p.fireRate *= 1.2; // 총 캐릭터: 발사 속도 증가
+        p.angularSpeed *= 1.2; // 칼 캐릭터: 회전 속도 증가
         // 칼 막대기의 회전 속도도 업데이트
         const sword = swords.find(s => s.player === p);
         if (sword) {
@@ -355,9 +386,9 @@
     {
       id: "spd",
       title: "이동 속도",
-      desc: "+12% 이동 속도",
+      desc: "+20% 이동 속도",
       badge: "+MS",
-      apply: () => applyToAllPlayers((p) => (p.speed *= 1.12)),
+      apply: () => applyToAllPlayers((p) => (p.speed *= 1.2)),
     },
     {
       id: "hp",
@@ -386,9 +417,9 @@
     {
       id: "regen",
       title: "재생",
-      desc: "+0.6 HP/초",
+      desc: "+1.0 HP/초",
       badge: "REGEN",
-      apply: () => applyToAllPlayers((p) => (p.regen += 0.6)),
+      apply: () => applyToAllPlayers((p) => (p.regen += 1.0)),
     },
     {
       id: "size",
@@ -1357,6 +1388,7 @@
                 rp.hpMax = sp.hpMax;
                 rp.level = sp.level;
                 rp.damage = sp.damage;
+                rp.defense = sp.defense;
                 rp.fireRate = sp.fireRate;
                 rp.pierce = sp.pierce;
                 rp.pickup = sp.pickup;
@@ -1653,6 +1685,14 @@
     while (player1.xp >= player1.xpToNext) {
       player1.xp -= player1.xpToNext;
       player1.level += 1;
+      // 레벨업 시 이동속도·공격속도 10% 상승, 공격력·방어력 +1
+      applyToAllPlayers((p) => {
+        p.speed *= 1.1;
+        p.fireRate *= 1.1;
+        p.angularSpeed *= 1.1;
+        p.damage += 1;
+        p.defense = (p.defense || 0) + 1;
+      });
       player1.xpToNext = Math.floor(player1.xpToNext * 1.28 + 8);
       // 5레벨 배수(5, 10, 15, 20...)일 때는 능력치 선택 화면 표시
       if (player1.level % 5 === 0) {
@@ -2133,6 +2173,7 @@
             hpMax: p.hpMax,
             level: p.level,
             damage: p.damage,
+            defense: p.defense,
             fireRate: p.fireRate,
             pierce: p.pierce,
             pickup: p.pickup,
@@ -2206,10 +2247,11 @@
           if (e.hitCd <= 0 && p.invuln <= 0) {
           e.hitCd = 0.55;
             p.invuln = 0.42;
-            p.hp -= e.damage;
+            const actualDmg = Math.max(0, e.damage - (p.defense || 0));
+            p.hp -= actualDmg;
           camera.shake = Math.max(camera.shake, 9);
           effects.hitFlash = 0.2;
-            floats.push({ x: p.x, y: p.y - 18, ttl: 0.65, text: `-${e.damage}`, color: "#ff4d6d" });
+            floats.push({ x: p.x, y: p.y - 18, ttl: 0.65, text: `-${actualDmg}`, color: "#ff4d6d" });
             if (p.hp <= 0) {
               p.hp = 0;
             state.gameOver = true;
@@ -2524,7 +2566,7 @@
       // P1 정보 (자신)
       hudText += `[P1] HP ${Math.floor(player1.hp)}/${player1.hpMax}  `;
       hudText += `LV ${player1.level}  `;
-      hudText += `DMG ${Math.floor(player1.damage)}  `;
+      hudText += `DMG ${Math.floor(player1.damage)}  DEF ${player1.defense || 0}  `;
       hudText += `AS ${player1.fireRate.toFixed(1)}/s  `;
       hudText += `PIERCE ${player1.pierce}  `;
       hudText += `PICKUP ${Math.floor(player1.pickup)}\n`;
@@ -2534,7 +2576,7 @@
       if (isLocalMultiplayer) {
         hudText += `[P2] HP ${Math.floor(player2.hp)}/${player2.hpMax}  `;
         hudText += `LV ${player2.level}  `;
-        hudText += `DMG ${Math.floor(player2.damage)}  `;
+        hudText += `DMG ${Math.floor(player2.damage)}  DEF ${player2.defense || 0}  `;
         hudText += `AS ${player2.fireRate.toFixed(1)}/s  `;
         hudText += `PIERCE ${player2.pierce}  `;
         hudText += `PICKUP ${Math.floor(player2.pickup)}\n`;
@@ -2549,7 +2591,7 @@
           const dashPct = rp.dashCdMax ? Math.floor(((rp.dashCdMax - (rp.dashCd || 0)) / rp.dashCdMax) * 100) : 0;
           hudText += `[P${playerNum}] HP ${Math.floor(rp.hp || 0)}/${rp.hpMax || 100}  `;
           hudText += `LV ${rp.level || 1}  `;
-          hudText += `DMG ${Math.floor(rp.damage || 10)}  `;
+          hudText += `DMG ${Math.floor(rp.damage || 10)}  DEF ${rp.defense || 0}  `;
           hudText += `AS ${(rp.fireRate || 1).toFixed(1)}/s  `;
           hudText += `PIERCE ${rp.pierce || 0}  `;
           hudText += `PICKUP ${Math.floor(rp.pickup || 50)}\n`;
@@ -2567,7 +2609,7 @@
       // 싱글플레이어
     hudEl.textContent =
         `HP ${Math.floor(player1.hp)}/${player1.hpMax}  LV ${player1.level}  XP ${xpPct}%\n` +
-        `DMG ${Math.floor(player1.damage)}  ` +
+        `DMG ${Math.floor(player1.damage)}  DEF ${player1.defense || 0}  ` +
         `AS ${player1.fireRate.toFixed(1)}/s  ` +
         `PIERCE ${player1.pierce}  ` +
         `PICKUP ${Math.floor(player1.pickup)}\n` +
@@ -2709,7 +2751,8 @@
       ctx.stroke();
     }
 
-    // Enemies
+    // Enemies (레벨에 따라: 동그라미→세모→네모→오각형→육각형, 보스=별)
+    const shapeTier = Math.min(5, Math.max(1, Math.ceil(player1.level / 2))); // 1~2레벨=1, 3~4=2, 5~6=3, 7~8=4, 9+=5
     for (const e of enemies) {
       const [sx, sy] = worldToScreen(e.x, e.y);
 
@@ -2718,10 +2761,19 @@
       if (e.kind === "tank") fill = "rgba(255,77,109,0.65)";
       if (e.kind === "boss") fill = "rgba(255,0,0,0.95)"; // 보스는 빨간색
 
-      ctx.beginPath();
       ctx.fillStyle = fill;
-      ctx.arc(sx, sy, e.r, 0, TAU);
-      ctx.fill();
+      if (e.kind === "boss") {
+        drawStar(ctx, sx, sy, e.r);
+        ctx.fill();
+      } else if (shapeTier === 1) {
+        ctx.beginPath();
+        ctx.arc(sx, sy, e.r, 0, TAU);
+        ctx.fill();
+      } else {
+        const sides = shapeTier + 1; // 2→3(세모), 3→4(네모), 4→5(오각형), 5→6(육각형)
+        drawPolygon(ctx, sx, sy, e.r, sides);
+        ctx.fill();
+      }
 
       // 보스의 경우 "BOSS" 텍스트 표시
       if (e.kind === "boss") {

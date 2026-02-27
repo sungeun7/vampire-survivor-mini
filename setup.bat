@@ -61,12 +61,16 @@ pause
 exit /b %MAIN_EXIT_CODE%
 
 :main_script
+setlocal enabledelayedexpansion
 REM Display startup message
 echo Starting setup script...
 echo.
 
 REM Change to script directory first
 cd /d "%~dp0" 2>nul
+
+REM Ensure System32 and PowerShell are in PATH for minimal environments
+set "PATH=%SystemRoot%\System32\WindowsPowerShell\v1.0;%SystemRoot%\System32;%PATH%"
 if errorlevel 1 (
     echo ERROR: Cannot change to script directory.
     echo Current directory: %CD%
@@ -134,69 +138,51 @@ if not errorlevel 1 (
 
     REM Try direct download and install if package managers failed
     java -version >nul 2>&1
-    if errorlevel 1 (
-        echo.
-        echo Package managers failed. Attempting direct download.
-        echo Downloading Java 17 installer...
-        REM Try PowerShell download if available
-        set "PS_PATH=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
-        if exist "%PS_PATH%" (
-            "%PS_PATH%" -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference = 'SilentlyContinue'; try { Invoke-WebRequest -Uri 'https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.10%%2B7/OpenJDK17U-jdk_x64_windows_hotspot_17.0.10_7.msi' -OutFile 'java-17-installer.msi' -UseBasicParsing -ErrorAction Stop; if (Test-Path 'java-17-installer.msi') { $size = (Get-Item 'java-17-installer.msi').Length; if ($size -gt 1048576) { exit 0 } else { Remove-Item 'java-17-installer.msi' -Force; exit 1 } } else { exit 1 } } catch { exit 1 }" 2>nul
-            if not errorlevel 1 (
-                if exist "java-17-installer.msi" (
-                    call :check_file_size_java "java-17-installer.msi"
-                )
-            )
-        )
-        REM Try curl as fallback if PowerShell failed or not available
-        if not exist "java-17-installer.msi" (
-            curl --version >nul 2>&1
-            if not errorlevel 1 (
-                echo Downloading Java 17 installer using curl...
-                curl -L -f --progress-bar -o "java-17-installer.msi" "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.10%%2B7/OpenJDK17U-jdk_x64_windows_hotspot_17.0.10_7.msi"
-                if not errorlevel 1 (
-                    if exist "java-17-installer.msi" (
-                        call :check_file_size_java "java-17-installer.msi"
-                    )
-                )
-            )
-        )
-        
-        REM Install if download succeeded
-        if exist "java-17-installer.msi" (
-            echo.
-            echo Installing Java 17...
-            echo NOTE: Administrator rights may be required. Please approve the UAC prompt if it appears.
-            echo.
-            msiexec /i "java-17-installer.msi" /quiet /norestart ADDLOCAL=FeatureMain,FeatureEnvironment,FeatureJarFileRunWith,FeatureJavaHome
-            if not errorlevel 1 (
-                echo Java installation completed!
-                timeout /t 5 >nul
-                echo Note: Java installer should have added Java to system PATH.
-                echo If Java is not found, please restart this script or open a new command prompt.
-            )
-            if exist "java-17-installer.msi" del "java-17-installer.msi" >nul 2>&1
-        )
-    )
+    if errorlevel 1 goto :do_java_direct_download
+    goto :java_download_done
+
+:do_java_direct_download
+echo.
+echo Package managers failed. Attempting direct download.
+echo Downloading Java 17 installer...
+powershell -NoProfile -ExecutionPolicy Bypass -File "download-java.ps1"
+if not errorlevel 1 (
+    if exist java-17-installer.msi call :check_file_size_java java-17-installer.msi
+)
+if exist "java-17-installer.msi" goto :do_java_install
+goto :java_download_done
+:do_java_install
+echo.
+echo Installing Java 17...
+echo NOTE - Administrator rights may be required. Please approve the UAC prompt if it appears.
+echo.
+powershell -NoProfile -ExecutionPolicy Bypass -File "install-java.ps1"
+if not errorlevel 1 (
+    echo Java installation completed!
+    timeout /t 5 >nul
+    echo Note - Java installer should have added Java to system PATH.
+    echo If Java is not found, please restart this script or open a new command prompt.
+)
+REM Proceed to final Java check
+:java_download_done
 
     REM Final check
     java -version >nul 2>&1
     if errorlevel 1 (
         echo.
-        echo ERROR: Java installation failed or not completed.
+        echo ERROR - Java installation failed or not completed.
         echo.
-        echo Please install Java 17 manually:
-        echo 1. Visit https://adoptium.net/temurin/releases/
+        echo Please install Java 17 manually
+        echo 1. Visit adoptium.net/temurin/releases/
         echo 2. Download "Java 17 (LTS)" - Windows x64 MSI installer
         echo 3. Run the installer and follow the prompts
         echo 4. Restart this script after installation
         echo.
-        echo Alternative: Install using winget (run as Administrator):
+        echo Alternative - Install using winget (run as Administrator)
         echo   winget install -e --id Microsoft.OpenJDK.17
         echo.
         goto :error_exit
     )
-)
 goto :java_check_done
 
 :java_found
@@ -233,7 +219,7 @@ if errorlevel 1 (
         )
     )
 
-    if %MAVEN_INSTALLED% equ 0 (
+    if !MAVEN_INSTALLED! equ 0 (
         REM Try Chocolatey first (most reliable)
         where choco >nul 2>&1
         if not errorlevel 1 (
@@ -254,7 +240,7 @@ if errorlevel 1 (
         )
 
         REM Try winget if Chocolatey failed or not available
-        if %MAVEN_INSTALLED% equ 0 (
+        if !MAVEN_INSTALLED! equ 0 (
             where winget >nul 2>&1
             if not errorlevel 1 (
                 echo Installing Maven using winget...
@@ -287,7 +273,7 @@ if errorlevel 1 (
         )
 
         REM Download and extract Maven portable version if package managers failed
-        if %MAVEN_INSTALLED% equ 0 (
+        if !MAVEN_INSTALLED! equ 0 (
             echo Downloading Maven portable version directly...
 
             REM Change to script directory
@@ -302,10 +288,10 @@ if errorlevel 1 (
             where curl >nul 2>&1
             if not errorlevel 1 (
                 echo Downloading Maven using curl...
-                curl -L -f --progress-bar -o "%MAVEN_ZIP%" "%MAVEN_URL%"
+                curl -L -f -s -S -o "%MAVEN_ZIP%" "%MAVEN_URL%"
                 if errorlevel 1 (
                     echo Trying mirror URL...
-                    curl -L -f --progress-bar -o "%MAVEN_ZIP%" "%MAVEN_URL2%"
+                    curl -L -f -s -S -o "%MAVEN_ZIP%" "%MAVEN_URL2%"
                 )
                 if not errorlevel 1 (
                     if exist "%MAVEN_ZIP%" (
@@ -356,7 +342,7 @@ if errorlevel 1 (
             )
 
             REM Extract if download succeeded
-            if %DOWNLOAD_SUCCESS% equ 1 (
+            if !DOWNLOAD_SUCCESS! equ 1 (
                 echo Extracting Maven...
 
                 if exist "%MAVEN_TEMP%" rmdir /s /q "%MAVEN_TEMP%" >nul 2>&1
@@ -404,7 +390,7 @@ if errorlevel 1 (
                 )
 
                 REM Cleanup on failure
-                if %EXTRACT_SUCCESS% equ 0 (
+                if !EXTRACT_SUCCESS! equ 0 (
                     if exist "%MAVEN_TEMP%" rmdir /s /q "%MAVEN_TEMP%" >nul 2>&1
                     if exist "%MAVEN_ZIP%" del "%MAVEN_ZIP%" >nul 2>&1
                     echo Maven extraction failed.
@@ -435,7 +421,7 @@ if errorlevel 1 (
                 )
             )
         )
-        if %MAVEN_INSTALLED% equ 0 (
+        if !MAVEN_INSTALLED! equ 0 (
             echo.
             echo ERROR: Maven installation failed.
             echo Please install Maven manually: https://maven.apache.org/download.cgi
@@ -492,7 +478,7 @@ if "%DOWNLOAD_OK%"=="0" (
     curl --version >nul 2>&1
     if not errorlevel 1 (
         echo Downloading Java 17 installer using curl...
-        curl -L -f --progress-bar -o "java-17-installer.msi" "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.10%%2B7/OpenJDK17U-jdk_x64_windows_hotspot_17.0.10_7.msi"
+        curl -L -f -s -S -o "java-17-installer.msi" "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.10%%2B7/OpenJDK17U-jdk_x64_windows_hotspot_17.0.10_7.msi"
         if not errorlevel 1 (
             if exist "java-17-installer.msi" (
                 call :check_file_size_java "java-17-installer.msi"
@@ -508,13 +494,13 @@ REM Install if download succeeded
 if "%DOWNLOAD_OK%"=="1" (
     echo.
     echo Installing Java 17...
-    echo NOTE: Administrator rights may be required. Please approve the UAC prompt if it appears.
+    echo NOTE - Administrator rights may be required. Please approve the UAC prompt if it appears.
     echo.
-    msiexec /i "java-17-installer.msi" /quiet /norestart ADDLOCAL=FeatureMain,FeatureEnvironment,FeatureJarFileRunWith,FeatureJavaHome
+    "%SystemRoot%\System32\msiexec.exe" /i "java-17-installer.msi" /quiet /norestart ADDLOCAL=FeatureMain,FeatureEnvironment,FeatureJarFileRunWith,FeatureJavaHome
     if not errorlevel 1 (
         echo Java installation completed!
         timeout /t 5 >nul
-        echo Note: Java installer should have added Java to system PATH.
+        echo Note - Java installer should have added Java to system PATH.
         echo If Java is not found, please restart this script or open a new command prompt.
     )
     if exist "java-17-installer.msi" del "java-17-installer.msi" >nul 2>&1
@@ -538,16 +524,30 @@ if !MSI_SIZE! GTR 1048576 (
     exit /b 1
 )
 
+REM Helper function for curl download (Java)
+:download_java_curl
+curl -L -f -s -S -o "java-17-installer.msi" "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.10%%2B7/OpenJDK17U-jdk_x64_windows_hotspot_17.0.10_7.msi" 2>nul
+exit /b %errorlevel%
+
+REM Helper: Download Java via PowerShell (URL built from parts to avoid batch parsing)
+:download_java_via_ps_script
+cd /d "%~dp0"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$p='SilentlyContinue';$ProgressPreference=$p;$c=[char]58;$u='https'+$c+'/'+'/github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.10'+'%%2B7'+'/OpenJDK17U-jdk_x64_windows_hotspot_17.0.10_7.msi';try{Invoke-WebRequest -Uri $u -OutFile 'java-17-installer.msi' -UseBasicParsing -EA Stop;$s=(Get-Item 'java-17-installer.msi').Length;if($s -gt 1048576){exit 0}else{Remove-Item 'java-17-installer.msi' -Force;exit 1}}catch{exit 1}" 2>nul
+set "DL_RESULT=%errorlevel%"
+exit /b %DL_RESULT%
+
 REM Helper function for PowerShell download (Java)
 :download_java_ps
+setlocal enabledelayedexpansion
 set "DL_URL=%~1"
 set "DL_OUT=%~2"
 set "PS_PATH=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 if not exist "%PS_PATH%" (
+    endlocal
     exit /b 1
 )
-"%PS_PATH%" -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference = 'SilentlyContinue'; try { Invoke-WebRequest -Uri '%DL_URL%' -OutFile '%DL_OUT%' -UseBasicParsing -ErrorAction Stop; if (Test-Path '%DL_OUT%') { $size = (Get-Item '%DL_OUT%').Length; if ($size -gt 1048576) { exit 0 } else { Remove-Item '%DL_OUT%' -Force; exit 1 } } else { exit 1 } } catch { exit 1 }" 2>nul
-exit /b %errorlevel%
+"%PS_PATH%" -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference = 'SilentlyContinue'; try { Invoke-WebRequest -Uri '!DL_URL!' -OutFile '!DL_OUT!' -UseBasicParsing -ErrorAction Stop; if (Test-Path '!DL_OUT!') { $size = (Get-Item '!DL_OUT!').Length; if ($size -gt 1048576) { exit 0 } else { Remove-Item '!DL_OUT!' -Force; exit 1 } } else { exit 1 } } catch { exit 1 }" 2>nul
+for /f "delims=" %%e in ("!errorlevel!") do endlocal & exit /b %%e
 
 REM Helper function for PowerShell download (Maven)
 :download_maven_ps
