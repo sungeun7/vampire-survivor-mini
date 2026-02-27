@@ -297,6 +297,7 @@
 
     magnetPulse: 0,
     shootAcc: 0,
+    bombs: 3,
   };
 
   function makePlayer(id, color) {
@@ -457,6 +458,13 @@
       desc: "대시 쿨다운 -18%",
       badge: "DASH",
       apply: () => applyToAllPlayers((p) => (p.dashCdMax *= 0.82)),
+    },
+    {
+      id: "bomb",
+      title: "폭탄 1개 추가",
+      desc: "폭탄 +1 (Ctrl로 사용 시 화면의 적 소멸)",
+      badge: "BOMB",
+      apply: () => applyToAllPlayers((p) => (p.bombs = (p.bombs || 0) + 1)),
     },
   ];
 
@@ -1389,6 +1397,7 @@
                 rp.level = sp.level;
                 rp.damage = sp.damage;
                 rp.defense = sp.defense;
+                rp.bombs = sp.bombs;
                 rp.fireRate = sp.fireRate;
                 rp.pierce = sp.pierce;
                 rp.pickup = sp.pickup;
@@ -1703,6 +1712,32 @@
         // 일반 레벨업 시에는 랜덤 3가지 아이템 선택 화면 표시
         chooseUpgrades();
       }
+    }
+  }
+
+  // 폭탄 사용: 화면의 적 전부 소멸 (Ctrl 키)
+  function useBomb() {
+    const p = player1;
+    const count = p.bombs || 0;
+    if (count <= 0 || !started || state.gameOver || choosing) return;
+    p.bombs = count - 1;
+    const cleared = enemies.length;
+    enemies.length = 0;
+    floats.push({
+      x: p.x,
+      y: p.y - 28,
+      ttl: 1.2,
+      text: "폭탄! 적 소멸",
+      color: "#ffaa00",
+    });
+    if (cleared > 0) {
+      floats.push({
+        x: p.x,
+        y: p.y - 14,
+        ttl: 1.0,
+        text: `-${cleared}`,
+        color: "#ff6600",
+      });
     }
   }
 
@@ -2078,6 +2113,13 @@
       }
     }
 
+    // 폭탄 사용 (Ctrl 키)
+    if (e.key === "Control" && !e.repeat && started && !state.gameOver && !choosing && (player1.bombs || 0) > 0) {
+      useBomb();
+      e.preventDefault();
+      return;
+    }
+
     if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " ", "Enter"].includes(e.key)) e.preventDefault();
     setKey(e, true);
   });
@@ -2176,6 +2218,7 @@
             level: p.level,
             damage: p.damage,
             defense: p.defense,
+            bombs: p.bombs,
             fireRate: p.fireRate,
             pierce: p.pierce,
             pickup: p.pickup,
@@ -2571,7 +2614,8 @@
       hudText += `DMG ${Math.floor(player1.damage)}  DEF ${player1.defense || 0}  `;
       hudText += `AS ${player1.fireRate.toFixed(1)}/s  `;
       hudText += `PIERCE ${player1.pierce}  `;
-      hudText += `PICKUP ${Math.floor(player1.pickup)}\n`;
+      hudText += `PICKUP ${Math.floor(player1.pickup)}  `;
+      hudText += `BOMB ${player1.bombs ?? 3}\n`;
       hudText += `DASH ${clamp(dash1Pct, 0, 100)}%\n\n`;
 
       // P2 정보 (로컬 멀티플레이어)
@@ -2581,7 +2625,8 @@
         hudText += `DMG ${Math.floor(player2.damage)}  DEF ${player2.defense || 0}  `;
         hudText += `AS ${player2.fireRate.toFixed(1)}/s  `;
         hudText += `PIERCE ${player2.pierce}  `;
-        hudText += `PICKUP ${Math.floor(player2.pickup)}\n`;
+        hudText += `PICKUP ${Math.floor(player2.pickup)}  `;
+        hudText += `BOMB ${player2.bombs ?? 3}\n`;
         hudText += `DASH ${clamp(dash2Pct, 0, 100)}%\n\n`;
       }
 
@@ -2596,7 +2641,7 @@
           hudText += `DMG ${Math.floor(rp.damage || 10)}  DEF ${rp.defense || 0}  `;
           hudText += `AS ${(rp.fireRate || 1).toFixed(1)}/s  `;
           hudText += `PIERCE ${rp.pierce || 0}  `;
-          hudText += `PICKUP ${Math.floor(rp.pickup || 50)}\n`;
+          hudText += `PICKUP ${Math.floor(rp.pickup || 50)}  BOMB ${rp.bombs ?? 3}\n`;
           hudText += `DASH ${clamp(dashPct, 0, 100)}%\n\n`;
         });
       }
@@ -2614,7 +2659,7 @@
         `DMG ${Math.floor(player1.damage)}  DEF ${player1.defense || 0}  ` +
         `AS ${player1.fireRate.toFixed(1)}/s  ` +
         `PIERCE ${player1.pierce}  ` +
-        `PICKUP ${Math.floor(player1.pickup)}\n` +
+        `PICKUP ${Math.floor(player1.pickup)}  BOMB ${player1.bombs ?? 3}\n` +
       `ENEMIES ${enemies.length}  ` +
       `TIME ${state.t.toFixed(1)}s  ` +
         `DASH ${clamp(dash1Pct, 0, 100)}%`;
