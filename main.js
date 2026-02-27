@@ -1685,13 +1685,15 @@
     while (player1.xp >= player1.xpToNext) {
       player1.xp -= player1.xpToNext;
       player1.level += 1;
-      // 레벨업 시 이동속도·공격속도 10% 상승, 공격력·방어력 +1
+      // 레벨업 시 이동속도·공격속도 10% 상승, 공격력·방어력 +1, 피 50 증가
       applyToAllPlayers((p) => {
         p.speed *= 1.1;
         p.fireRate *= 1.1;
         p.angularSpeed *= 1.1;
-        p.damage += 1;
-        p.defense = (p.defense || 0) + 1;
+        p.damage += 2;
+        p.defense = (p.defense || 0) + 2;
+        p.hpMax += 50;
+        p.hp += 50;
       });
       player1.xpToNext = Math.floor(player1.xpToNext * 1.28 + 8);
       // 5레벨 배수(5, 10, 15, 20...)일 때는 능력치 선택 화면 표시
