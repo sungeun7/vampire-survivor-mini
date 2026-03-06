@@ -185,14 +185,18 @@
   let waitingForRankName = null; // 1~3위일 때 이름 입력 대기 (rank: 0, 1, 2)
   let rankNameInput = "";
 
-  // Network multiplayer
+  // Network multiplayer (WebSocket 서버 또는 PeerJS P2P)
   let ws = null;
+  let peer = null;
+  let peerConn = null; // PeerJS DataConnection (호스트=게스트 연결, 게스트=호스트 연결)
+  let lastGuestPlayerState = null; // 호스트가 게스트로부터 받은 마지막 playerUpdate
   let isHost = false;
   let clientId = null;
   let myPlayerId = null;
   let remotePlayers = {}; // { playerId: playerData }
   let remoteProjectiles = []; // 원격 플레이어의 투사체
   let serverUrl = null;
+  const USE_PEERJS_P2P = true; // true: PeerJS 시그널링 서버 사용 (npm start 불필요)
 
   // 캐릭터 타입: "gun" (총) 또는 "sword" (칼)
   let player1CharacterType = "gun";
@@ -224,6 +228,7 @@
       left: "a",
       right: "d",
       dash: "Space",
+      bomb: "ControlLeft", // 1플레이어 폭탄: 왼쪽 Ctrl
     },
     p2: {
       up: "ArrowUp",
@@ -231,6 +236,7 @@
       left: "ArrowLeft",
       right: "ArrowRight",
       dash: "Enter",
+      bomb: "Control",
     },
   };
 
@@ -309,15 +315,30 @@
   let multiplayer = false;
 
   function activePlayers() {
+    // 네트워크 멀티: 자신 + 원격 플레이어 (적 추적·오브 끌어당김 등에 사용)
+    if (isNetworkConnected()) {
+      const remotes = Object.values(remotePlayers).filter((p) => p && p.id !== myPlayerId);
+      if (remotes.length > 0) return [player1, ...remotes];
+    }
     return multiplayer ? [player1, player2] : [player1];
+  }
+
+  // 네트워크 연결 여부 (WebSocket 또는 PeerJS P2P)
+  function isNetworkConnected() {
+    return (ws && ws.readyState === WebSocket.OPEN) || (peerConn && peerConn.open);
+  }
+
+  // 네트워크 멀티일 때 플레이어 표시 이름 (P1→호스트, P2→게스트)
+  function getPlayerDisplayName(playerId) {
+    if (!isNetworkConnected()) return playerId || "?";
+    return playerId === "P1" ? "호스트" : playerId === "P2" ? "게스트" : (playerId || "?");
   }
 
   // 총 플레이어 수 (로컬 + 원격, 자신 제외)
   function totalPlayerCount() {
     const localCount = activePlayers().length;
-    // 원격 플레이어 수 (자신 제외)
     let remoteCount = 0;
-    if (ws && ws.readyState === WebSocket.OPEN) {
+    if (isNetworkConnected()) {
       remoteCount = Object.keys(remotePlayers).filter(pid => pid !== myPlayerId).length;
     }
     return localCount + remoteCount;
@@ -344,6 +365,9 @@
 
   /** @type {{x:number,y:number,r:number,spawnTime:number}[]} */
   const treasureChests = [];
+
+  /** @type {{x:number,y:number,r:number,type:'atk'|'def'}[]} */
+  const statDrops = [];
 
   /** @type {{x:number,y:number,ttl:number,text:string,color:string}[]} */
   const floats = [];
@@ -482,17 +506,26 @@
     // 네트워크 연결 종료 (정상 종료 코드로 재연결 방지)
     if (ws) {
       try {
-        // 정상 종료 코드(1000)를 보내서 재연결이 시도되지 않도록 함
         ws.close(1000, "User requested disconnect");
       } catch (e) {
         console.error("WebSocket 종료 중 오류:", e);
       }
       ws = null;
     }
+    if (peerConn) {
+      try { peerConn.close(); } catch (e) {}
+      peerConn = null;
+    }
+    if (peer) {
+      try { peer.destroy(); } catch (e) {}
+      peer = null;
+    }
+    lastGuestPlayerState = null;
     isHost = false;
     clientId = null;
     myPlayerId = null;
     remotePlayers = {};
+    remoteProjectiles = [];
     serverUrl = null;
 
     // 게임 상태 리셋
@@ -511,10 +544,12 @@
     projectiles.length = 0;
     enemies.length = 0;
     orbs.length = 0;
+    statDrops.length = 0;
     floats.length = 0;
     treasureChests.length = 0;
     lastTreasureChestTime = 0;
     lastBossTime = 0;
+    totalKills = 0;
 
     // 효과 초기화
     effects.hitFlash = 0;
@@ -759,6 +794,10 @@
   }
 
   function showHostMenu() {
+    if (USE_PEERJS_P2P) {
+      showHostMenuPeerJS();
+      return;
+    }
     console.log("showHostMenu called");
     overlayMode = "menu";
     overlayEl.classList.remove("hidden");
@@ -767,67 +806,159 @@
 
     choicesEl.innerHTML = "";
 
-    // 호스트 연결 URL 결정: Tailscale IP만 사용 (localhost 절대 사용 안함)
     const currentHostname = window.location.hostname;
     let hostWsUrl = null;
 
-    // 1순위: 저장된 Tailscale IP (100.으로 시작하는 IP만)
-    const savedIP = localStorage.getItem('lastTailscaleIP');
+    const savedIP = localStorage.getItem('lastServerIP');
     if (savedIP && savedIP.startsWith('100.')) {
       hostWsUrl = `ws://${savedIP}:8080`;
-      console.log("호스트 연결: 저장된 Tailscale IP 사용:", hostWsUrl);
-    }
-    // 2순위: 현재 페이지가 Tailscale IP로 열려있으면 그것을 사용
-    else if (currentHostname.startsWith('100.')) {
+    } else if (currentHostname.startsWith('100.')) {
       hostWsUrl = `ws://${currentHostname}:8080`;
-      // 저장된 IP로도 저장
-      localStorage.setItem('lastTailscaleIP', currentHostname);
-      console.log("호스트 연결: 현재 페이지의 Tailscale IP 사용:", hostWsUrl);
-    }
-    // 3순위: 현재 페이지가 일반 IP로 열려있으면 그것을 사용
-    else if (/^(\d{1,3}\.){3}\d{1,3}$/.test(currentHostname) && !currentHostname.startsWith('127.')) {
+      localStorage.setItem('lastServerIP', currentHostname);
+    } else if (/^(\d{1,3}\.){3}\d{1,3}$/.test(currentHostname) && !currentHostname.startsWith('127.')) {
       hostWsUrl = `ws://${currentHostname}:8080`;
-      console.log("호스트 연결: 현재 페이지의 IP 사용:", hostWsUrl);
+    } else if (currentHostname === 'localhost' || currentHostname === '127.0.0.1' || currentHostname === '') {
+      hostWsUrl = 'ws://localhost:8080';
+    } else {
+      if (overlaySubEl) overlaySubEl.textContent = "오류: 연결 주소를 찾을 수 없습니다.";
+      return;
     }
-    // localhost는 사용하지 않음
-    else {
-      console.error("호스트 연결: Tailscale IP를 찾을 수 없습니다. localhost는 사용하지 않습니다.");
-      if (overlaySubEl) overlaySubEl.textContent = "오류: Tailscale IP를 찾을 수 없습니다. 페이지를 Tailscale IP로 열어주세요.";
-      return; // 연결하지 않음
-    }
+
+    let roomCode = "";
+    const isLocalhost = hostWsUrl && (hostWsUrl.includes("localhost") || hostWsUrl.includes("127.0.0.1"));
+    try {
+      const u = new URL(hostWsUrl);
+      roomCode = encodeRoomCode(u.hostname, parseInt(u.port, 10)) || "";
+    } catch (e) {}
 
     const div = document.createElement("div");
     div.className = "choice";
     div.id = "hostStatus";
     div.innerHTML = `
-      <div class="choiceTitle">
-        <div>서버 시작 중...</div>
-      </div>
+      <div class="choiceTitle"><div>서버 시작 중...</div></div>
       <div class="choiceDesc">
+        ${roomCode ? `<strong>방 코드: ${roomCode}</strong><br>` : ""}
         기본 주소: ${hostWsUrl}<br>
-        <small style="opacity:0.7;">서버가 모든 인터페이스에서 리스닝 중입니다.</small>
+      </div>
+    `;
+    choicesEl.appendChild(div);
+    const backBtn = createBackButton(() => { if (ws) { ws.close(); ws = null; } showStartMenu(); });
+    choicesEl.appendChild(backBtn);
+    if (hostWsUrl) connectToServer(hostWsUrl, true);
+  }
+
+  // PeerJS P2P 호스트: 시그널링은 PeerJS 서버 사용 (npm start 불필요)
+  function showHostMenuPeerJS() {
+    overlayMode = "menu";
+    overlayEl.classList.remove("hidden");
+    if (overlayTitleEl) overlayTitleEl.textContent = "호스트 (P2P)";
+    if (overlaySubEl) overlaySubEl.textContent = "방 코드를 참가자에게 알려주세요. PeerJS 시그널링 서버 사용.";
+
+    choicesEl.innerHTML = "";
+    lastGuestPlayerState = null;
+    peerConn = null;
+
+    const roomId = "ms-" + Math.random().toString(36).substr(2, 8);
+
+    const div = document.createElement("div");
+    div.className = "choice";
+    div.id = "hostStatus";
+    div.innerHTML = `
+      <div class="choiceTitle"><div>연결 중...</div></div>
+      <div class="choiceDesc">
+        <strong>방 코드: <span id="roomCodeDisplay" style="letter-spacing:2px; font-size:1.1em;">${roomId}</span></strong>
+        <button type="button" id="copyRoomCodeBtn" style="margin-left:8px; padding:4px 10px; background:rgba(69,255,177,0.25); border:1px solid rgba(69,255,177,0.5); border-radius:6px; color:var(--text); cursor:pointer; font-size:12px;">복사</button><br>
+        <small style="opacity:0.8;">참가자는 "조인" → 방 코드 입력 (서버 설치 불필요)</small>
       </div>
     `;
     choicesEl.appendChild(div);
 
-    // 뒤로가기 버튼
+    document.getElementById("copyRoomCodeBtn").addEventListener("click", () => {
+      navigator.clipboard.writeText(roomId).then(() => {
+        document.getElementById("copyRoomCodeBtn").textContent = "복사됨!";
+        setTimeout(() => { document.getElementById("copyRoomCodeBtn").textContent = "복사"; }, 1500);
+      });
+    });
+
     const backBtn = createBackButton(() => {
-      if (ws) {
-        ws.close();
-        ws = null;
-      }
+      if (peerConn) { try { peerConn.close(); } catch (e) {} peerConn = null; }
+      if (peer) { try { peer.destroy(); } catch (e) {} peer = null; }
       showStartMenu();
     });
     choicesEl.appendChild(backBtn);
 
-    // 서버에 연결 (호스트) - Tailscale IP만 사용 (localhost 사용 안함)
-    if (hostWsUrl) {
-      console.log("Connecting to server as host:", hostWsUrl);
-      connectToServer(hostWsUrl, true);
-    } else {
-      console.error("호스트 연결 URL을 결정할 수 없습니다.");
-      if (overlaySubEl) overlaySubEl.textContent = "오류: 연결 주소를 찾을 수 없습니다.";
+    try {
+      peer = new Peer(roomId, { debug: 0 });
+    } catch (e) {
+      if (overlaySubEl) overlaySubEl.textContent = "PeerJS 로드 실패. 페이지를 새로고침 하세요.";
+      return;
     }
+
+    peer.on("open", () => {
+      isHost = true;
+      myPlayerId = "P1";
+      clientId = peer.id;
+      const statusEl = document.querySelector("#hostStatus .choiceTitle div");
+      if (statusEl) statusEl.textContent = "대기 중 — 참가자가 방 코드를 입력해 조인하세요";
+    });
+
+    peer.on("connection", (conn) => {
+      conn.on("open", () => {
+        peerConn = conn;
+        conn.on("data", (data) => {
+          const msg = typeof data === "string" ? JSON.parse(data) : data;
+          handleServerMessage(msg);
+        });
+        conn.on("close", () => { peerConn = null; });
+        conn.on("error", () => { peerConn = null; });
+
+        const state = {
+          players: {
+            P1: {
+              id: "P1", x: player1.x, y: player1.y, vx: 0, vy: 0,
+              hp: player1.hp, hpMax: player1.hpMax, level: player1.level,
+              damage: player1.damage, defense: player1.defense || 0, bombs: player1.bombs ?? 3,
+              fireRate: player1.fireRate, pierce: player1.pierce, pickup: player1.pickup,
+              dashCd: player1.dashCd, dashCdMax: player1.dashCdMax,
+              projSize: player1.projSize, projCount: player1.projCount || 1,
+            },
+          },
+          started: false,
+          gameOver: false,
+        };
+        conn.send(JSON.stringify({
+          type: "connected",
+          clientId: peer.id,
+          playerId: "P2",
+          isHost: false,
+          state,
+        }));
+        showCharacterSelect(false, true);
+      });
+    });
+
+    peer.on("error", (err) => {
+      console.error("PeerJS 호스트 오류:", err);
+      if (overlaySubEl) overlaySubEl.textContent = "연결 오류: " + (err.message || err.type || "알 수 없음");
+    });
+  }
+
+  // BMM 스타일: 호스트 주소(host:port) ↔ 짧은 방 코드 (영숫자)
+  function encodeRoomCode(host, port) {
+    const parts = host.split(".").map(Number);
+    if (parts.length !== 4 || parts.some(isNaN)) return null;
+    let num = (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3];
+    num = num * 65536 + (port | 0);
+    return num.toString(36).toLowerCase();
+  }
+  function decodeRoomCode(code) {
+    if (!code || !/^[0-9a-z]+$/.test(code)) return null;
+    let num = parseInt(code, 36);
+    if (isNaN(num)) return null;
+    const port = num % 65536;
+    num = Math.floor(num / 65536);
+    const a = (num >>> 24) & 0xff, b = (num >>> 16) & 0xff, c = (num >>> 8) & 0xff, d = num & 0xff;
+    return { host: `${a}.${b}.${c}.${d}`, port };
   }
 
   // IP 주소를 자동으로 ws://와 :8080을 붙여서 완전한 URL로 변환
@@ -859,49 +990,59 @@
       return `ws://${url}`;
     }
 
+    // 방 코드 (BMM 스타일): 영숫자 6~12자면 디코딩
+    if (/^[0-9a-z]{6,12}$/i.test(url)) {
+      const decoded = decodeRoomCode(url.toLowerCase());
+      if (decoded) return `ws://${decoded.host}:${decoded.port}`;
+    }
+
     // 그 외의 경우는 그대로 반환 (사용자가 직접 입력한 전체 URL)
     return url;
   }
 
   function showJoinMenu() {
+    if (USE_PEERJS_P2P) {
+      showJoinMenuPeerJS();
+      return;
+    }
     overlayMode = "menu";
     overlayEl.classList.remove("hidden");
     if (overlayTitleEl) overlayTitleEl.textContent = "서버에 조인";
-    if (overlaySubEl) overlaySubEl.textContent = "호스트의 IP 주소를 입력하세요";
+    if (overlaySubEl) overlaySubEl.textContent = "방 코드 또는 IP 주소를 입력하세요 (BMM 방식)";
 
     choicesEl.innerHTML = "";
 
-    // Tailscale 설치 안내
-    const tailscaleInfo = document.createElement("div");
-    tailscaleInfo.className = "choice";
-    tailscaleInfo.style.marginBottom = "12px";
-    tailscaleInfo.style.opacity = "0.9";
-    tailscaleInfo.innerHTML = `
+    // 안내: 방 코드 / IP
+    const joinInfo = document.createElement("div");
+    joinInfo.className = "choice";
+    joinInfo.style.marginBottom = "12px";
+    joinInfo.style.opacity = "0.9";
+    joinInfo.innerHTML = `
       <div class="choiceTitle">
-        <div>📦 Tailscale 설치 필요</div>
+        <div>🔗 방 코드 또는 IP</div>
       </div>
       <div class="choiceDesc">
-        Windows: <code style="background:rgba(0,0,0,.3);padding:2px 4px;border-radius:4px;">.\install-tailscale.ps1</code><br>
-        Linux/Mac: <code style="background:rgba(0,0,0,.3);padding:2px 4px;border-radius:4px;">./install-tailscale.sh</code>
+        <strong>방 코드</strong>: 호스트 화면에 표시된 코드 입력<br>
+        <strong>같은 Wi‑Fi(LAN)</strong>: 호스트가 알려준 IP 입력 (예: 192.168.0.5)
       </div>
     `;
-    choicesEl.appendChild(tailscaleInfo);
+    choicesEl.appendChild(joinInfo);
 
     const inputDiv = document.createElement("div");
     inputDiv.style.padding = "12px";
 
-    // 저장된 IP 확인
-    const savedIP = localStorage.getItem('lastTailscaleIP');
-    const defaultValue = savedIP ? formatWebSocketUrl(savedIP) : '';
-    const defaultPlaceholder = savedIP ? `ws://${savedIP}:8080` : "100.101.35.13 또는 ws://100.101.35.13:8080";
+    const savedIP = localStorage.getItem('lastServerIP');
+    const defaultPlaceholder = "방 코드 또는 IP (예: 4zqm6q9k / 192.168.0.5 / 100.x.x.x)";
+    const defaultValue = "";
 
     inputDiv.innerHTML = `
       <input type="text" id="serverUrlInput" placeholder="${defaultPlaceholder}"
              value="${defaultValue}"
+             autocomplete="off"
              style="width:100%; padding:8px; background:rgba(15,23,48,.8); border:1px solid rgba(255,255,255,.2);
                     border-radius:8px; color:var(--text); font-size:13px; margin-bottom:8px;">
       <div style="font-size:11px; opacity:0.7; margin-bottom:8px; text-align:center;" id="ipHint">
-        ${savedIP ? `💡 저장된 IP 사용: ${savedIP} (IP만 입력해도 자동으로 ws://와 :8080이 추가됩니다)` : '💡 IP 주소만 입력해도 자동으로 ws://와 :8080이 추가됩니다 (예: 100.101.35.13)'}
+        💡 호스트가 알려준 방 코드 또는 IP 입력 (같은 Wi‑Fi면 IP만 있어도 됨)
       </div>
       <div class="choice" style="cursor:pointer; margin-top:8px;">
         <div class="choiceTitle">
@@ -934,9 +1075,9 @@
       try {
         const urlObj = new URL(url);
         const hostname = urlObj.hostname;
-        // Tailscale IP (100.x.x.x) 또는 일반 IP 저장
-        if (hostname.startsWith('100.') || /^(\d{1,3}\.){3}\d{1,3}$/.test(hostname)) {
-          localStorage.setItem('lastTailscaleIP', hostname);
+        // 연결한 IP 저장 (다음 조인 시 기본값)
+        if (/^(\d{1,3}\.){3}\d{1,3}$/.test(hostname)) {
+          localStorage.setItem('lastServerIP', hostname);
         }
       } catch (e) {}
 
@@ -972,6 +1113,98 @@
     setTimeout(() => input.focus(), 100);
   }
 
+  // PeerJS P2P 조인: 방 코드(Peer ID) 입력 후 연결
+  function showJoinMenuPeerJS() {
+    overlayMode = "menu";
+    overlayEl.classList.remove("hidden");
+    if (overlayTitleEl) overlayTitleEl.textContent = "조인 (P2P)";
+    if (overlaySubEl) overlaySubEl.textContent = "호스트가 알려준 방 코드를 입력하세요";
+
+    choicesEl.innerHTML = "";
+
+    const joinInfo = document.createElement("div");
+    joinInfo.className = "choice";
+    joinInfo.style.marginBottom = "12px";
+    joinInfo.innerHTML = `
+      <div class="choiceTitle"><div>🔗 방 코드 입력</div></div>
+      <div class="choiceDesc">호스트 화면의 방 코드(예: ms-abc12xyz) 입력. PeerJS 시그널링 서버 사용.</div>
+    `;
+    choicesEl.appendChild(joinInfo);
+
+    const inputDiv = document.createElement("div");
+    inputDiv.style.padding = "12px";
+    inputDiv.innerHTML = `
+      <input type="text" id="peerRoomInput" placeholder="ms-xxxxxxxx"
+             autocomplete="off"
+             style="width:100%; padding:8px; background:rgba(15,23,48,.8); border:1px solid rgba(255,255,255,.2);
+                    border-radius:8px; color:var(--text); font-size:13px; margin-bottom:8px;">
+      <div class="choice" style="cursor:pointer; margin-top:8px;">
+        <div class="choiceTitle"><div>연결</div></div>
+      </div>
+    `;
+    choicesEl.appendChild(inputDiv);
+
+    const input = document.getElementById("peerRoomInput");
+    const connectBtn = inputDiv.querySelector(".choice");
+
+    const doConnect = () => {
+      const roomId = input.value.trim();
+      if (!roomId) {
+        if (overlaySubEl) overlaySubEl.textContent = "방 코드를 입력하세요";
+        return;
+      }
+      if (overlaySubEl) overlaySubEl.textContent = "연결 중...";
+
+      peerConn = null;
+      try {
+        peer = new Peer({ debug: 0 });
+      } catch (e) {
+        if (overlaySubEl) overlaySubEl.textContent = "PeerJS 로드 실패.";
+        return;
+      }
+
+      peer.on("open", () => {
+        const conn = peer.connect(roomId);
+        conn.on("open", () => {
+          peerConn = conn;
+          conn.on("data", (data) => {
+            const msg = typeof data === "string" ? JSON.parse(data) : data;
+            handleServerMessage(msg);
+          });
+          conn.on("close", () => { peerConn = null; });
+          conn.on("error", () => { peerConn = null; });
+        });
+        conn.on("error", (err) => {
+          console.error("PeerJS 조인 오류:", err);
+          if (overlaySubEl) overlaySubEl.textContent = "연결 실패: " + (err.message || "알 수 없음");
+        });
+      });
+
+      peer.on("error", (err) => {
+        console.error("PeerJS 오류:", err);
+        if (overlaySubEl) overlaySubEl.textContent = "연결 오류: " + (err.message || err.type || "알 수 없음");
+      });
+    };
+
+    connectBtn.addEventListener("click", doConnect);
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); doConnect(); }
+      else if (e.key === "Escape") {
+        e.preventDefault();
+        if (peer) { try { peer.destroy(); } catch (e) {} peer = null; }
+        showStartMenu();
+      }
+    });
+
+    const backBtn = createBackButton(() => {
+      if (peerConn) { try { peerConn.close(); } catch (e) {} peerConn = null; }
+      if (peer) { try { peer.destroy(); } catch (e) {} peer = null; }
+      showStartMenu();
+    });
+    choicesEl.appendChild(backBtn);
+    setTimeout(() => input.focus(), 100);
+  }
+
   // 설정 메뉴
   let waitingForKey = null; // 현재 키 입력 대기 중인 설정 (예: "p1.up")
 
@@ -989,6 +1222,9 @@
         "w": "W", "a": "A", "s": "S", "d": "D",
         "ArrowUp": "↑", "ArrowDown": "↓", "ArrowLeft": "←", "ArrowRight": "→",
         "Space": "Space", "Enter": "Enter",
+        "Control": "Ctrl",
+        "ControlLeft": "왼쪽 Ctrl",
+        "ControlRight": "오른쪽 Ctrl",
       };
       return keyMap[key] || key;
     }
@@ -1005,6 +1241,7 @@
       { label: "왼쪽", key: "left" },
       { label: "오른쪽", key: "right" },
       { label: "대시", key: "dash" },
+      { label: "폭탄", key: "bomb" },
     ];
 
     p1Keys.forEach(({ label, key }) => {
@@ -1045,6 +1282,7 @@
       { label: "왼쪽", key: "left" },
       { label: "오른쪽", key: "right" },
       { label: "대시", key: "dash" },
+      { label: "폭탄", key: "bomb" },
     ];
 
     p2Keys.forEach(({ label, key }) => {
@@ -1163,9 +1401,9 @@
         try {
           const urlObj = new URL(url);
           const hostname = urlObj.hostname;
-          // Tailscale IP (100.x.x.x) 또는 일반 IP 저장
+          // 연결한 IP 저장
           if (hostname.startsWith('100.') || /^(\d{1,3}\.){3}\d{1,3}$/.test(hostname)) {
-            localStorage.setItem('lastTailscaleIP', hostname);
+            localStorage.setItem('lastServerIP', hostname);
             console.log("   IP 주소 저장됨:", hostname);
           }
         } catch (e) {
@@ -1195,16 +1433,6 @@
         console.error("   오류 타겟:", err.target?.url);
         console.error("   오류 상세:", err);
 
-        // 연결 진단 정보 수집
-        let urlObj;
-        let isTailscaleIP = false;
-        try {
-          urlObj = new URL(url);
-          isTailscaleIP = urlObj.hostname.startsWith('100.');
-        } catch (e) {
-          console.error("   URL 파싱 실패:", e);
-        }
-
         if (overlaySubEl && !isReconnecting) {
           const errorDetails = [];
           errorDetails.push("<strong style='color:#ff4d6d;'>❌ 연결 실패</strong>");
@@ -1213,32 +1441,9 @@
           errorDetails.push("<br><br>");
           errorDetails.push("<strong>확인 사항:</strong>");
           errorDetails.push("<br>");
-          errorDetails.push("1️⃣ <strong>서버 실행 확인</strong>");
-          errorDetails.push("   → 호스트 PC에서 <code style='background:rgba(0,0,0,.3);padding:2px 4px;border-radius:4px;'>npm start</code> 실행 중인지 확인");
-          errorDetails.push("   → 서버 콘솔에 '✅ WebSocket 서버가 포트 8080에서 리스닝 중입니다' 메시지 확인");
-          errorDetails.push("<br>");
-          errorDetails.push("2️⃣ <strong>방화벽 설정</strong> (호스트 PC, 관리자 권한 PowerShell)");
-          errorDetails.push("   <code style='background:rgba(0,0,0,.3);padding:2px 4px;border-radius:4px;'>netsh advfirewall firewall add rule name=\"WebSocket Server\" dir=in action=allow protocol=TCP localport=8080</code>");
-          errorDetails.push("<br>");
-          if (isTailscaleIP) {
-            errorDetails.push("3️⃣ <strong>Tailscale 확인</strong>");
-            errorDetails.push("   → 호스트 PC: <code style='background:rgba(0,0,0,.3);padding:2px 4px;border-radius:4px;'>tailscale status</code> (실행 중인지 확인)");
-            errorDetails.push("   → 호스트 PC: <code style='background:rgba(0,0,0,.3);padding:2px 4px;border-radius:4px;'>tailscale ip</code> (IP 주소 확인)");
-            errorDetails.push("   → 이 PC: <code style='background:rgba(0,0,0,.3);padding:2px 4px;border-radius:4px;'>tailscale status</code> (같은 네트워크인지 확인)");
-            errorDetails.push("   → 호스트와 이 PC가 같은 Tailscale 계정으로 로그인되어 있는지 확인");
-            errorDetails.push("<br>");
-            errorDetails.push("4️⃣ <strong>IP 주소 확인</strong>");
-            errorDetails.push("   → 호스트 PC의 서버 콘솔에서 표시된 Tailscale IP 확인");
-            errorDetails.push("   → IP 주소가 변경되었을 수 있음 (다시 확인 필요)");
-          } else {
-            errorDetails.push("3️⃣ <strong>로컬 서버 확인</strong>");
-            errorDetails.push("   → localhost 서버가 실행 중인지 확인");
-          }
-          errorDetails.push("<br>");
-          errorDetails.push("5️⃣ <strong>네트워크 연결 확인</strong>");
-          errorDetails.push("   → 호스트 PC와 이 PC가 같은 네트워크에 있는지 확인");
-          errorDetails.push("   → 서버 콘솔에서 연결 시도가 표시되는지 확인");
-
+          errorDetails.push("1️⃣ <strong>서버 실행 확인</strong> (호스트 PC에서 npm start)");
+          errorDetails.push("2️⃣ <strong>방화벽</strong> (호스트 PC, 포트 8080 허용)");
+          errorDetails.push("3️⃣ <strong>네트워크</strong> (같은 Wi‑Fi 또는 IP 확인)");
           overlaySubEl.innerHTML = errorDetails.join("<br>");
         }
       };
@@ -1312,9 +1517,7 @@
             errorDetails.push("<br><br><strong>확인 사항:</strong>");
             errorDetails.push("1️⃣ 서버가 실행 중인지 (호스트 PC에서 npm start)");
             errorDetails.push("2️⃣ 방화벽 설정 (포트 8080) - 호스트 PC");
-            errorDetails.push("3️⃣ Tailscale 실행 상태 (양쪽 PC 모두)");
-            errorDetails.push("4️⃣ IP 주소 확인 (호스트 PC의 서버 콘솔 확인)");
-            errorDetails.push("5️⃣ 같은 Tailscale 계정으로 로그인되어 있는지 확인");
+            errorDetails.push("3️⃣ IP 주소·네트워크 확인 (같은 Wi‑Fi 또는 방 코드)");
             overlaySubEl.innerHTML = errorDetails.join("<br>");
           } else if (!host && !started) {
             // 게스트 모드이고 게임이 시작되지 않은 경우
@@ -1328,9 +1531,7 @@
             errorDetails.push("<br><br><strong>확인 사항:</strong>");
             errorDetails.push("1️⃣ 서버가 실행 중인지 (호스트 PC에서 npm start)");
             errorDetails.push("2️⃣ 방화벽 설정 (포트 8080) - 호스트 PC");
-            errorDetails.push("3️⃣ Tailscale 실행 상태 (양쪽 PC 모두)");
-            errorDetails.push("4️⃣ IP 주소 확인 (호스트 PC의 서버 콘솔 확인)");
-            errorDetails.push("5️⃣ 같은 Tailscale 계정으로 로그인되어 있는지 확인");
+            errorDetails.push("3️⃣ IP 주소·네트워크 확인 (같은 Wi‑Fi 또는 방 코드)");
             errorDetails.push("<br><br>다시 시도하려면 IP 주소를 입력하고 연결 버튼을 클릭하세요.");
             overlaySubEl.innerHTML = errorDetails.join("<br>");
           } else {
@@ -1349,6 +1550,12 @@
   }
 
   function handleServerMessage(data) {
+    // PeerJS P2P: 호스트가 게스트의 playerUpdate 수신 시 저장 + 원격 플레이어로 표시용 반영
+    if (data.type === "playerUpdate" && isHost && data.player && data.playerId) {
+      lastGuestPlayerState = data.player;
+      remotePlayers[data.playerId] = { ...data.player, id: data.playerId, color: data.player.color || "rgba(124,92,255,0.95)" };
+      return;
+    }
     switch (data.type) {
       case "connected":
         clientId = data.clientId;
@@ -1356,10 +1563,8 @@
         isHost = data.isHost;
         console.log(`연결됨: ${myPlayerId} (${isHost ? "호스트" : "클라이언트"})`);
 
-        // Tailscale IP 정보 저장 (호스트든 게스트든 저장)
-        if (data.tailscaleIP) {
-          localStorage.setItem('lastTailscaleIP', data.tailscaleIP);
-          console.log("Tailscale IP 저장됨:", data.tailscaleIP);
+        if (data.tailscaleIP || data.serverIP) {
+          localStorage.setItem('lastServerIP', data.tailscaleIP || data.serverIP);
         }
 
         if (isHost) {
@@ -1379,12 +1584,12 @@
         break;
 
       case "state":
-        // 서버 상태 동기화
+        // 서버/호스트 상태 동기화 (상대방 캐릭터 표시용)
         if (data.state.players) {
           Object.keys(data.state.players).forEach((pid) => {
             if (pid !== myPlayerId) {
               if (!remotePlayers[pid]) {
-                remotePlayers[pid] = { ...data.state.players[pid] };
+                remotePlayers[pid] = { ...data.state.players[pid], id: pid, color: data.state.players[pid].color || "rgba(124,92,255,0.95)" };
               } else {
                 // 부드러운 보간 (lerp) - 위치만 보간, 능력치는 즉시 업데이트
                 const rp = remotePlayers[pid];
@@ -1456,9 +1661,37 @@
   }
 
   function sendToServer(data) {
+    if (peerConn && peerConn.open) {
+      try {
+        peerConn.send(JSON.stringify(data));
+      } catch (e) {
+        console.warn("PeerJS 전송 실패:", e);
+      }
+      return;
+    }
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(data));
     }
+  }
+
+  // PeerJS P2P: 호스트가 게스트에게 보낼 상태 (P1=호스트, P2=게스트)
+  function buildP2PState() {
+    const players = {
+      P1: {
+        id: "P1", x: player1.x, y: player1.y, vx: player1.vx, vy: player1.vy,
+        hp: player1.hp, hpMax: player1.hpMax, level: player1.level,
+        damage: player1.damage, defense: player1.defense ?? 0, bombs: player1.bombs ?? 3,
+        fireRate: player1.fireRate, pierce: player1.pierce, pickup: player1.pickup,
+        dashCd: player1.dashCd, dashCdMax: player1.dashCdMax,
+        projSize: player1.projSize, projCount: player1.projCount || 1,
+      },
+    };
+    if (lastGuestPlayerState) players.P2 = { ...lastGuestPlayerState, id: "P2" };
+    return {
+      players,
+      started: state.started,
+      gameOver: state.gameOver,
+    };
   }
 
   function startGame(enableMultiplayer, isNetworkMultiplayer = false) {
@@ -1694,13 +1927,14 @@
     while (player1.xp >= player1.xpToNext) {
       player1.xp -= player1.xpToNext;
       player1.level += 1;
-      // 레벨업 시 이동속도·공격속도 10% 상승, 공격력·방어력 +1, 피 50 증가
+      // 레벨업 시 이동속도·공격속도 10% 상승, 공격력 +2, 방어력 +2 (칼 캐릭터는 방어력 1.2배), 피 50 증가
       applyToAllPlayers((p) => {
         p.speed *= 1.1;
         p.fireRate *= 1.1;
         p.angularSpeed *= 1.1;
         p.damage += 2;
-        p.defense = (p.defense || 0) + 2;
+        const defGain = p.characterType === "sword" ? 2 * 1.2 : 2;
+        p.defense = (p.defense || 0) + defGain;
         p.hpMax += 50;
         p.hp += 50;
       });
@@ -1741,34 +1975,37 @@
     }
   }
 
-  function spawnOrb(x, y, amount) {
-    orbs.push({ x, y, r: 6, amount });
+  // tier: 등급 0~3 (grunt, runner, tank, boss) — 등급에 맞는 색·모양·경험치
+  function spawnOrb(x, y, amount, tier = 0) {
+    orbs.push({ x, y, r: 6, amount, tier: Math.min(3, Math.max(0, tier)) });
   }
 
-  // 경험치 양에 따른 색상 반환
-  function getOrbColor(amount) {
-    if (amount < 5) {
-      return "rgba(69,255,177,0.85)"; // 기본 (연두색)
-    } else if (amount < 10) {
-      return "rgba(124,92,255,0.85)"; // 보라색
-    } else if (amount < 20) {
-      return "rgba(255,165,0,0.85)"; // 주황색
-    } else {
-      return "rgba(255,69,0,0.85)"; // 빨간색 (고경험치)
-    }
+  // 100킬마다 드랍: 공격력 +5 또는 방어력 +5 (랜덤)
+  function spawnStatDrop(x, y) {
+    const type = Math.random() < 0.5 ? "atk" : "def";
+    statDrops.push({ x, y, r: 10, type });
   }
 
-  // 경험치 양에 따른 테두리 색상 반환
-  function getOrbStrokeColor(amount) {
-    if (amount < 5) {
-      return "rgba(69,255,177,0.25)";
-    } else if (amount < 10) {
-      return "rgba(124,92,255,0.25)";
-    } else if (amount < 20) {
-      return "rgba(255,165,0,0.25)";
-    } else {
-      return "rgba(255,69,0,0.25)";
-    }
+  // 등급(0~3)에 따른 경험치 보석 색상
+  function getOrbColor(tier) {
+    const colors = [
+      "rgba(69,255,177,0.85)",   // 0 grunt
+      "rgba(124,92,255,0.85)",   // 1 runner
+      "rgba(255,165,0,0.85)",    // 2 tank
+      "rgba(255,69,0,0.85)"      // 3 boss
+    ];
+    return colors[tier] ?? colors[0];
+  }
+
+  // 등급에 따른 경험치 보석 테두리 색상
+  function getOrbStrokeColor(tier) {
+    const colors = [
+      "rgba(69,255,177,0.25)",
+      "rgba(124,92,255,0.25)",
+      "rgba(255,165,0,0.25)",
+      "rgba(255,69,0,0.25)"
+    ];
+    return colors[tier] ?? colors[0];
   }
 
   // 보물상자 스폰 (플레이어 위치 기준 랜덤 위치)
@@ -1780,11 +2017,25 @@
     treasureChests.push({ x, y, r: 16, spawnTime: state.t });
   }
 
+  // 몬스터 등급(0~3): grunt=0, runner=1, tank=2, boss=3
+  function getEnemyTier(kind) {
+    return kind === "grunt" ? 0 : kind === "runner" ? 1 : kind === "tank" ? 2 : kind === "boss" ? 3 : 0;
+  }
+
   // 몬스터 등급에 따른 경험치 배율 계산
   function getEnemyTierMultiplier(kind) {
-    // grunt: 등급 0, runner: 등급 1, tank: 등급 2, boss: 등급 3
-    const tier = kind === "grunt" ? 0 : kind === "runner" ? 1 : kind === "tank" ? 2 : kind === "boss" ? 3 : 0;
-    return Math.pow(1.5, tier); // 1.5^등급
+    return Math.pow(1.5, getEnemyTier(kind)); // 1.5^등급
+  }
+
+  // 등급별 적 색상 (색·모양이 등급에 맞음)
+  function getEnemyColorByTier(tier) {
+    const colors = [
+      "rgba(69,255,177,0.9)",   // 0 grunt: 연두/청록
+      "rgba(124,92,255,0.9)",   // 1 runner: 보라
+      "rgba(255,165,0,0.9)",    // 2 tank: 주황
+      "rgba(255,69,0,0.95)"     // 3 boss: 빨강
+    ];
+    return colors[tier] ?? colors[0];
   }
 
   function spawnEnemy(kind = "grunt") {
@@ -1898,7 +2149,8 @@
 
     const baseAng = Math.atan2(ny, nx);
     const projCount = from.projCount || 1;
-    const spread = projCount > 1 ? 0.15 : 0.06; // 여러 발사체일 때 더 넓은 스프레드
+    // 총알 개수가 많을수록 발사 범위(스프레드)가 넓어짐: 인접 발사체 간 각도 = 0.1 + 0.05*(개수-1)
+    const spread = projCount > 1 ? 0.1 + 0.05 * (projCount - 1) : 0.06;
 
     // 발사체 개수만큼 투사체 생성
     for (let i = 0; i < projCount; i++) {
@@ -1922,7 +2174,7 @@
       projectiles.push(proj);
 
       // 네트워크 멀티플레이: 호스트가 투사체를 생성하면 서버에 전송
-      if (ws && ws.readyState === WebSocket.OPEN && isHost && myPlayerId && from === player1) {
+      if (from === player1 && myPlayerId && ((ws && ws.readyState === WebSocket.OPEN && isHost) || (peerConn && peerConn.open))) {
         sendToServer({
           type: "projectile",
           playerId: myPlayerId,
@@ -1941,6 +2193,7 @@
   let spawnAcc = 0;
   let lastTreasureChestTime = 0; // 마지막 보물상자 스폰 시간
   let lastBossTime = 0; // 마지막 보스 스폰 시간
+  let totalKills = 0; // 100킬마다 공격/방어 아이템 드랍용
 
   function reset() {
     state.t = 0;
@@ -1962,11 +2215,12 @@
     swords.length = 0;
     enemies.length = 0;
     orbs.length = 0;
+    statDrops.length = 0;
     floats.length = 0;
     treasureChests.length = 0;
     lastTreasureChestTime = 0;
     lastBossTime = 0;
-    lastBossTime = 0;
+    totalKills = 0;
 
     choosing = false;
     if (started) overlayEl.classList.add("hidden");
@@ -2113,11 +2367,13 @@
       }
     }
 
-    // 폭탄 사용 (Ctrl 키)
-    if (e.key === "Control" && !e.repeat && started && !state.gameOver && !choosing && (player1.bombs || 0) > 0) {
-      useBomb();
-      e.preventDefault();
-      return;
+    // 폭탄 사용 (설정에서 지정한 키)
+    if (!e.repeat && started && !state.gameOver && !choosing && (player1.bombs || 0) > 0) {
+      if (matchesKey(e, keyBindings.p1.bomb) || (multiplayer && matchesKey(e, keyBindings.p2.bomb))) {
+        useBomb();
+        e.preventDefault();
+        return;
+      }
     }
 
     if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " ", "Enter"].includes(e.key)) e.preventDefault();
@@ -2203,31 +2459,23 @@
       p.x += p.vx * dt;
       p.y += p.vy * dt;
 
-      // 네트워크 멀티플레이: 플레이어 위치와 능력치를 서버에 전송 (호스트만)
-      if (ws && ws.readyState === WebSocket.OPEN && isHost && myPlayerId && p === player1) {
-        sendToServer({
+      // 네트워크 멀티플레이: 플레이어 상태 전송
+      // WebSocket: 호스트 → 서버에 playerUpdate | PeerJS: 게스트 → 호스트에 playerUpdate
+      if (myPlayerId && p === player1) {
+        const payload = {
           type: "playerUpdate",
           playerId: myPlayerId,
           player: {
-            x: p.x,
-            y: p.y,
-            vx: p.vx,
-            vy: p.vy,
-            hp: p.hp,
-            hpMax: p.hpMax,
-            level: p.level,
-            damage: p.damage,
-            defense: p.defense,
-            bombs: p.bombs,
-            fireRate: p.fireRate,
-            pierce: p.pierce,
-            pickup: p.pickup,
-            dashCd: p.dashCd,
-            dashCdMax: p.dashCdMax,
-            projSize: p.projSize,
-            projCount: p.projCount || 1,
+            x: p.x, y: p.y, vx: p.vx, vy: p.vy,
+            hp: p.hp, hpMax: p.hpMax, level: p.level,
+            damage: p.damage, defense: p.defense ?? 0, bombs: p.bombs ?? 3,
+            fireRate: p.fireRate, pierce: p.pierce, pickup: p.pickup,
+            dashCd: p.dashCd, dashCdMax: p.dashCdMax,
+            projSize: p.projSize, projCount: p.projCount || 1,
           },
-        });
+        };
+        if (ws && ws.readyState === WebSocket.OPEN && isHost) sendToServer(payload);
+        else if (peerConn && peerConn.open && !isHost) sendToServer(payload);
       }
 
       // Auto shooting (per player)
@@ -2237,6 +2485,11 @@
         p.shootAcc -= shotInterval;
         shoot(p);
     }
+    }
+
+    // PeerJS P2P: 호스트가 게스트에게 상태 브로드캐스트 (서버 대신)
+    if (USE_PEERJS_P2P && isHost && peerConn && peerConn.open) {
+      sendToServer({ type: "state", state: buildP2PState() });
     }
 
     // Camera follows own player (each player sees their own character)
@@ -2448,14 +2701,16 @@
             floats.push({ x: e.x, y: e.y - 18, ttl: 0.55, text: `${Math.floor(sword.damage)}`, color: "#e8eeff" });
 
             if (e.hp <= 0) {
-              // drop XP (등급별 경험치 배율 적용)
+              // drop XP (등급별 경험치 배율 적용, 등급에 맞는 오브 색·모양)
               const base = 4 + Math.floor(state.t / 25);
               const tierMultiplier = getEnemyTierMultiplier(e.kind);
               const xpAmount = Math.floor(base * tierMultiplier);
+              const tier = getEnemyTier(e.kind);
               const playerCount = totalPlayerCount();
-              for (let n = 0; n < playerCount; n++) spawnOrb(e.x, e.y, xpAmount);
+              for (let n = 0; n < playerCount; n++) spawnOrb(e.x, e.y, xpAmount, tier);
               enemies.splice(j, 1);
-              // 적이 터지는 소리
+              totalKills += 1;
+              if (totalKills % 100 === 0) spawnStatDrop(e.x, e.y);
               playEnemyDeathSound();
             }
           }
@@ -2495,15 +2750,16 @@
           floats.push({ x: e.x, y: e.y - 18, ttl: 0.55, text: `${Math.floor(p.damage)}`, color: "#e8eeff" });
 
           if (e.hp <= 0) {
-            // drop XP (등급별 경험치 배율 적용)
+            // drop XP (등급별 경험치 배율 적용, 등급에 맞는 오브 색·모양)
             const base = 4 + Math.floor(state.t / 25);
             const tierMultiplier = getEnemyTierMultiplier(e.kind);
             const xpAmount = Math.floor(base * tierMultiplier);
-            // 플레이어 수만큼 아이템(경험치) 드랍 (2명=2배, 3명=3배...)
+            const tier = getEnemyTier(e.kind);
             const playerCount = totalPlayerCount();
-            for (let n = 0; n < playerCount; n++) spawnOrb(e.x, e.y, xpAmount);
+            for (let n = 0; n < playerCount; n++) spawnOrb(e.x, e.y, xpAmount, tier);
             enemies.splice(j, 1);
-            // 적이 터지는 소리
+            totalKills += 1;
+            if (totalKills % 100 === 0) spawnStatDrop(e.x, e.y);
             playEnemyDeathSound();
           }
 
@@ -2579,6 +2835,40 @@
       }
     }
 
+    // Stat drops (100킬마다: 공격력+5 또는 방어력+5) — 끌어당김 + 획득
+    for (let i = statDrops.length - 1; i >= 0; i--) {
+      const sd = statDrops[i];
+      const ps = activePlayers();
+      let target = ps[0];
+      let bestD = Infinity;
+      for (const p of ps) {
+        const d2 = (p.x - sd.x) ** 2 + (p.y - sd.y) ** 2;
+        if (d2 < bestD) {
+          bestD = d2;
+          target = p;
+        }
+      }
+      const dx = target.x - sd.x;
+      const dy = target.y - sd.y;
+      const d = len(dx, dy);
+      if (d < target.pickup) {
+        const [nx, ny] = norm(dx, dy);
+        const pull = clamp((target.pickup - d) / target.pickup, 0, 1);
+        sd.x += nx * (260 * pull * dt);
+        sd.y += ny * (260 * pull * dt);
+      }
+      if (d < target.r + sd.r + 2) {
+        if (sd.type === "atk") {
+          target.damage = (target.damage || 0) + 5;
+          floats.push({ x: sd.x, y: sd.y - 18, ttl: 0.9, text: "+5 공격력", color: "#ff9966" });
+        } else {
+          target.defense = (target.defense || 0) + 5;
+          floats.push({ x: sd.x, y: sd.y - 18, ttl: 0.9, text: "+5 방어력", color: "#66aaff" });
+        }
+        statDrops.splice(i, 1);
+      }
+    }
+
     // Floating text
     for (let i = floats.length - 1; i >= 0; i--) {
       const f = floats[i];
@@ -2600,16 +2890,16 @@
     const dash1Pct = Math.floor(((player1.dashCdMax - player1.dashCd) / player1.dashCdMax) * 100);
     const dash2Pct = Math.floor(((player2.dashCdMax - player2.dashCd) / player2.dashCdMax) * 100);
 
-    // 네트워크 멀티플레이어 확인
-    const isNetworkMultiplayer = ws && ws.readyState === WebSocket.OPEN && Object.keys(remotePlayers).length > 0;
+    // 네트워크 멀티플레이어 확인 (WebSocket 또는 PeerJS)
+    const isNetworkMultiplayer = isNetworkConnected() && Object.keys(remotePlayers).length > 0;
     const isLocalMultiplayer = multiplayer && !isNetworkMultiplayer;
 
     if (isNetworkMultiplayer || isLocalMultiplayer) {
       // 멀티플레이어: 각 플레이어 정보를 구분해서 표시
       let hudText = '';
 
-      // P1 정보 (자신)
-      hudText += `[P1] HP ${Math.floor(player1.hp)}/${player1.hpMax}  `;
+      // 자신 정보 (네트워크: 호스트/게스트, 로컬: P1)
+      hudText += `[${isNetworkMultiplayer ? getPlayerDisplayName(myPlayerId) : "P1"}] HP ${Math.floor(player1.hp)}/${player1.hpMax}  `;
       hudText += `LV ${player1.level}  `;
       hudText += `DMG ${Math.floor(player1.damage)}  DEF ${player1.defense || 0}  `;
       hudText += `AS ${player1.fireRate.toFixed(1)}/s  `;
@@ -2630,13 +2920,12 @@
         hudText += `DASH ${clamp(dash2Pct, 0, 100)}%\n\n`;
       }
 
-      // 원격 플레이어 정보 (네트워크 멀티플레이어)
+      // 원격 플레이어 정보 (네트워크 멀티플레이어, 호스트/게스트 표시)
       if (isNetworkMultiplayer) {
-        Object.values(remotePlayers).forEach((rp, index) => {
+        Object.values(remotePlayers).forEach((rp) => {
           if (rp.id === myPlayerId) return; // 자신은 제외
-          const playerNum = index + 2;
           const dashPct = rp.dashCdMax ? Math.floor(((rp.dashCdMax - (rp.dashCd || 0)) / rp.dashCdMax) * 100) : 0;
-          hudText += `[P${playerNum}] HP ${Math.floor(rp.hp || 0)}/${rp.hpMax || 100}  `;
+          hudText += `[${getPlayerDisplayName(rp.id)}] HP ${Math.floor(rp.hp || 0)}/${rp.hpMax || 100}  `;
           hudText += `LV ${rp.level || 1}  `;
           hudText += `DMG ${Math.floor(rp.damage || 10)}  DEF ${rp.defense || 0}  `;
           hudText += `AS ${(rp.fireRate || 1).toFixed(1)}/s  `;
@@ -2746,14 +3035,44 @@
       ctx.restore();
     }
 
-    // Orbs (경험치에 따라 다른 색상)
+    // Stat drops (100킬마다: 공격+5 / 방어+5)
+    for (const sd of statDrops) {
+      const [sx, sy] = worldToScreen(sd.x, sd.y);
+      if (sd.type === "atk") {
+        ctx.fillStyle = "rgba(255,120,80,0.95)";
+        ctx.strokeStyle = "rgba(255,80,40,0.6)";
+        drawPolygon(ctx, sx, sy, sd.r, 4, -Math.PI / 4); // 다이아몬드
+      } else {
+        ctx.fillStyle = "rgba(80,140,255,0.95)";
+        ctx.strokeStyle = "rgba(60,100,220,0.6)";
+        drawPolygon(ctx, sx, sy, sd.r, 4, 0); // 사각형(방패 느낌)
+      }
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    // Orbs (등급별 색·모양: 적과 동일한 등급 = 같은 경험치 등급)
     for (const o of orbs) {
       const [sx, sy] = worldToScreen(o.x, o.y);
-      ctx.beginPath();
-      ctx.fillStyle = getOrbColor(o.amount);
-      ctx.arc(sx, sy, o.r, 0, TAU);
-      ctx.fill();
-      ctx.strokeStyle = getOrbStrokeColor(o.amount);
+      const tier = o.tier ?? 0;
+      ctx.fillStyle = getOrbColor(tier);
+      if (tier === 3) {
+        drawStar(ctx, sx, sy, o.r);
+        ctx.fill();
+      } else if (tier === 0) {
+        ctx.beginPath();
+        ctx.arc(sx, sy, o.r, 0, TAU);
+        ctx.fill();
+      } else if (tier === 1) {
+        ctx.beginPath();
+        drawPolygon(ctx, sx, sy, o.r, 3);
+        ctx.fill();
+      } else {
+        ctx.beginPath();
+        drawPolygon(ctx, sx, sy, o.r, 4);
+        ctx.fill();
+      }
+      ctx.strokeStyle = getOrbStrokeColor(tier);
       ctx.stroke();
     }
 
@@ -2798,27 +3117,24 @@
       ctx.stroke();
     }
 
-    // Enemies (레벨에 따라: 동그라미→세모→네모→오각형→육각형, 보스=별)
-    const shapeTier = Math.min(5, Math.max(1, Math.ceil(player1.level / 2))); // 1~2레벨=1, 3~4=2, 5~6=3, 7~8=4, 9+=5
+    // Enemies (등급별 색·모양: grunt=원, runner=삼각형, tank=사각형, boss=별)
     for (const e of enemies) {
       const [sx, sy] = worldToScreen(e.x, e.y);
+      const tier = getEnemyTier(e.kind);
 
-      let fill = "rgba(255,77,109,0.9)";
-      if (e.kind === "runner") fill = "rgba(255,142,76,0.9)";
-      if (e.kind === "tank") fill = "rgba(255,77,109,0.65)";
-      if (e.kind === "boss") fill = "rgba(255,0,0,0.95)"; // 보스는 빨간색
-
-      ctx.fillStyle = fill;
+      ctx.fillStyle = getEnemyColorByTier(tier);
       if (e.kind === "boss") {
         drawStar(ctx, sx, sy, e.r);
         ctx.fill();
-      } else if (shapeTier === 1) {
+      } else if (e.kind === "grunt") {
         ctx.beginPath();
         ctx.arc(sx, sy, e.r, 0, TAU);
         ctx.fill();
+      } else if (e.kind === "runner") {
+        drawPolygon(ctx, sx, sy, e.r, 3); // 삼각형
+        ctx.fill();
       } else {
-        const sides = shapeTier + 1; // 2→3(세모), 3→4(네모), 4→5(오각형), 5→6(육각형)
-        drawPolygon(ctx, sx, sy, e.r, sides);
+        drawPolygon(ctx, sx, sy, e.r, 4); // tank: 사각형
         ctx.fill();
       }
 
@@ -2868,14 +3184,14 @@
       ctx.arc(sx + d[0] * 10, sy + d[1] * 10, 3.2, 0, TAU);
       ctx.fill();
 
-        // label
+        // label (네트워크 멀티: 호스트/게스트)
         ctx.fillStyle = "rgba(159,176,214,0.95)";
         ctx.font = "11px ui-sans-serif, system-ui";
-        ctx.fillText(p.id, sx - 10, sy - p.r - 10);
+        ctx.fillText(isNetworkConnected() ? getPlayerDisplayName(myPlayerId) : p.id, sx - 10, sy - p.r - 10);
       }
 
-      // 원격 플레이어 렌더링 (네트워크 멀티플레이)
-      if (ws && ws.readyState === WebSocket.OPEN) {
+      // 원격 플레이어 렌더링 (네트워크 멀티플레이: WebSocket 또는 PeerJS)
+      if (isNetworkConnected()) {
         Object.values(remotePlayers).forEach((rp) => {
           if (rp.id === myPlayerId) return; // 자신은 제외
           const [sx, sy] = worldToScreen(rp.x || 0, rp.y || 0);
@@ -2886,10 +3202,10 @@
           ctx.arc(sx, sy, 12, 0, TAU);
           ctx.fill();
 
-          // label
+          // label (호스트/게스트)
           ctx.fillStyle = "rgba(159,176,214,0.95)";
           ctx.font = "11px ui-sans-serif, system-ui";
-          ctx.fillText(rp.id || "?", sx - 10, sy - 18);
+          ctx.fillText(getPlayerDisplayName(rp.id), sx - 10, sy - 18);
         });
       }
 

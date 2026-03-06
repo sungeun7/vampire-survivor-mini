@@ -9,39 +9,12 @@ const PORT = 8080;
 const HTTP_PORT = 8081; // IP 정보 제공용 HTTP 서버
 let GAME_PORT = 5173; // 게임 파일 제공용 HTTP 서버 (기본값)
 
-// 모든 인터페이스에 바인딩 (Tailscale 포함)
-const wss = new WebSocket.Server({ 
-  port: PORT,
-  host: '0.0.0.0' // 모든 네트워크 인터페이스에서 리스닝
-});
-
-// Tailscale IP 자동 감지
-function getTailscaleIP(callback) {
-  exec('tailscale ip', (error, stdout, stderr) => {
-    if (error) {
-      // Tailscale이 설치되지 않았거나 실행되지 않음
-      return callback(null);
-    }
-    const ip = stdout.trim();
-    if (ip && ip.match(/^100\.\d+\.\d+\.\d+$/)) {
-      // Tailscale IP 형식 확인 (100.x.x.x)
-      callback(ip);
-    } else {
-      callback(null);
-    }
-  });
-}
-
-// 네트워크 인터페이스에서 Tailscale IP 찾기 (대체 방법)
-function findTailscaleIP() {
+// LAN IP 조회 (같은 Wi‑Fi 참가용)
+function getLANIP() {
   const interfaces = os.networkInterfaces();
   for (const name of Object.keys(interfaces)) {
     for (const iface of interfaces[name]) {
-      // Tailscale 인터페이스는 보통 'tailscale' 또는 'utun'으로 시작
-      if ((name.toLowerCase().includes('tailscale') || 
-           name.toLowerCase().includes('utun')) &&
-          iface.family === 'IPv4' &&
-          iface.address.startsWith('100.')) {
+      if (iface.family === 'IPv4' && !iface.internal && iface.address) {
         return iface.address;
       }
     }
@@ -49,33 +22,18 @@ function findTailscaleIP() {
   return null;
 }
 
-// 서버 시작 시 Tailscale IP 확인
-let tailscaleIP = null;
-getTailscaleIP((ip) => {
-  if (ip) {
-    tailscaleIP = ip;
-    console.log(`✅ Tailscale IP 감지: ${ip}`);
-  } else {
-    // 대체 방법으로 찾기
-    const foundIP = findTailscaleIP();
-    if (foundIP) {
-      tailscaleIP = foundIP;
-      console.log(`✅ Tailscale IP 감지 (인터페이스): ${foundIP}`);
-    } else {
-      console.log(`⚠️  Tailscale IP를 자동으로 감지하지 못했습니다.`);
-      console.log(`   수동 확인: tailscale ip`);
-    }
-  }
-  
-  console.log(`\n📡 WebSocket 서버 시작:`);
-  console.log(`   로컬: ws://localhost:${PORT}`);
-  if (tailscaleIP) {
-    console.log(`   Tailscale: ws://${tailscaleIP}:${PORT}`);
-    console.log(`\n💡 다른 플레이어는 이 주소로 연결하세요: ws://${tailscaleIP}:${PORT}`);
-  } else {
-    console.log(`   Tailscale IP: 확인 필요 (tailscale ip 명령 실행)`);
-  }
-  console.log(`   모든 인터페이스에서 리스닝 중...\n`);
+let serverIP = getLANIP();
+console.log(`\n📡 WebSocket 서버 시작:`);
+console.log(`   로컬: ws://localhost:${PORT}`);
+if (serverIP) {
+  console.log(`   같은 Wi‑Fi(LAN): ws://${serverIP}:${PORT}`);
+  console.log(`\n💡 참가: 방 코드 또는 ws://${serverIP}:${PORT}`);
+}
+console.log(`   리스닝 중...\n`);
+
+const wss = new WebSocket.Server({
+  port: PORT,
+  host: '0.0.0.0'
 });
 
 // 게임 상태 (서버가 권한자)
@@ -155,13 +113,8 @@ wss.on('listening', () => {
   console.log(`\n✅ WebSocket 서버가 포트 ${PORT}에서 리스닝 중입니다.`);
   console.log(`   바인딩 주소: 0.0.0.0 (모든 네트워크 인터페이스)`);
   console.log(`   로컬 주소: ws://localhost:${PORT}`);
-  if (tailscaleIP) {
-    console.log(`   Tailscale 주소: ws://${tailscaleIP}:${PORT}`);
-    console.log(`\n💡 다른 플레이어는 이 주소로 연결하세요:`);
-    console.log(`   ${tailscaleIP}`);
-    console.log(`   또는: ws://${tailscaleIP}:${PORT}`);
-  } else {
-    console.log(`   ⚠️  Tailscale IP: 확인 필요 (tailscale ip 명령 실행)`);
+  if (serverIP) {
+    console.log(`   LAN: ws://${serverIP}:${PORT}`);
   }
   console.log(`\n📡 서버가 모든 인터페이스에서 연결을 기다리는 중...\n`);
 });
@@ -224,8 +177,9 @@ wss.on('connection', (ws, req) => {
       playerId,
       isHost,
       state: gameState,
-      tailscaleIP: tailscaleIP, // Tailscale IP 정보 포함
-      wsUrl: tailscaleIP ? `ws://${tailscaleIP}:${PORT}` : null,
+      serverIP: serverIP,
+      tailscaleIP: serverIP,
+      wsUrl: serverIP ? `ws://${serverIP}:${PORT}` : null,
     }));
   } catch (err) {
     console.error(`초기 상태 전송 실패 (${clientId}):`, err);
@@ -407,31 +361,25 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-// 서버 리스닝 확인
-// HTTP 서버: Tailscale IP 정보 제공
+// HTTP 서버: IP 정보 제공 (LAN)
 const httpServer = http.createServer((req, res) => {
-  // CORS 헤더 추가
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Content-Type', 'application/json');
   
   if (req.url === '/ip' || req.url === '/api/ip') {
-    // Tailscale IP 정보 제공
-    getTailscaleIP((ip) => {
-      if (!ip) {
-        const foundIP = findTailscaleIP();
-        ip = foundIP;
-      }
-      
-      res.writeHead(200);
-      res.end(JSON.stringify({
-        success: true,
-        tailscaleIP: ip,
-        port: PORT,
-        wsUrl: ip ? `ws://${ip}:${PORT}` : null,
-        localUrl: `ws://localhost:${PORT}`,
-        timestamp: Date.now()
-      }));
-    });
+    const lanIP = getLANIP();
+    res.writeHead(200);
+    res.end(JSON.stringify({
+      success: true,
+      serverIP: lanIP,
+      tailscaleIP: lanIP,
+      lanIP: lanIP,
+      port: PORT,
+      wsUrl: lanIP ? `ws://${lanIP}:${PORT}` : null,
+      wsUrlLAN: lanIP ? `ws://${lanIP}:${PORT}` : null,
+      localUrl: `ws://localhost:${PORT}`,
+      timestamp: Date.now()
+    }));
   } else {
     res.writeHead(404);
     res.end(JSON.stringify({ success: false, error: 'Not found' }));
@@ -577,34 +525,6 @@ wss.on('listening', () => {
   console.log(`\n✅ 서버가 모든 인터페이스에서 리스닝 중입니다.`);
   console.log(`   주소: ${address.address}:${address.port}`);
   console.log(`   프로토콜: WebSocket (WS)\n`);
-  
-  // 네트워크 인터페이스 정보 출력
-  const interfaces = os.networkInterfaces();
-  console.log('📡 활성 네트워크 인터페이스:');
-  let hasTailscale = false;
-  for (const name of Object.keys(interfaces)) {
-    for (const iface of interfaces[name]) {
-      if (iface.family === 'IPv4' && !iface.internal) {
-        const isTailscale = iface.address.startsWith('100.');
-        if (isTailscale) hasTailscale = true;
-        console.log(`   ${name}: ${iface.address}${isTailscale ? ' (Tailscale)' : ''}`);
-      }
-    }
-  }
-  if (!hasTailscale) {
-    console.log(`   ⚠️  Tailscale 인터페이스를 찾을 수 없습니다.`);
-  }
-  console.log('');
-  
-  // 주기적으로 Tailscale IP 재확인 (5초마다)
-  setInterval(() => {
-    getTailscaleIP((ip) => {
-      if (ip && ip !== tailscaleIP) {
-        tailscaleIP = ip;
-        console.log(`🔄 Tailscale IP 업데이트: ${ip}`);
-      }
-    });
-  }, 5000);
   
   // 서버 상태 주기적 확인
   setInterval(() => {
