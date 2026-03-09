@@ -189,7 +189,9 @@
   let ws = null;
   let peer = null;
   let peerConn = null; // PeerJS DataConnection (호스트=게스트 연결, 게스트=호스트 연결)
-  let lastGuestPlayerState = null; // 호스트가 게스트로부터 받은 마지막 playerUpdate
+  let peerConnOpen = false; // true일 때만 전송 (연결이 열린 뒤에만 데이터 전달됨)
+  let lastGuestPlayerState = null; // 호스트가 게스트로부터 받은 마지막 위치
+  let lastHostPlayerState = null; // 게스트가 호스트로부터 받은 마지막 위치 (그리기 직전 동기화용)
   let isHost = false;
   let clientId = null;
   let myPlayerId = null;
@@ -315,9 +317,8 @@
   let multiplayer = false;
 
   function activePlayers() {
-    // 네트워크 멀티: 자신 + 원격 플레이어 (적 추적·오브 끌어당김 등에 사용)
     if (isNetworkConnected()) {
-      const remotes = Object.values(remotePlayers).filter((p) => p && p.id !== myPlayerId);
+      const remotes = Object.values(remotePlayers).filter((p) => p && String(p.id) !== String(myPlayerId));
       if (remotes.length > 0) return [player1, ...remotes];
     }
     return multiplayer ? [player1, player2] : [player1];
@@ -325,7 +326,9 @@
 
   // 네트워크 연결 여부 (WebSocket 또는 PeerJS P2P)
   function isNetworkConnected() {
-    return (ws && ws.readyState === WebSocket.OPEN) || (peerConn && peerConn.open);
+    if (ws && ws.readyState === WebSocket.OPEN) return true;
+    if (peerConn) return true; // PeerJS: 연결 객체만 있으면 연결된 것으로 간주
+    return false;
   }
 
   // 네트워크 멀티일 때 플레이어 표시 이름 (P1→호스트, P2→게스트)
@@ -369,6 +372,9 @@
   /** @type {{x:number,y:number,r:number,type:'atk'|'def'}[]} */
   const statDrops = [];
 
+  /** @type {{x:number,y:number,r:number}[]} - 1분마다 맵에 랜덤 스폰, 획득 시 5초 무적 */
+  const invincibilityDrops = [];
+
   /** @type {{x:number,y:number,ttl:number,text:string,color:string}[]} */
   const floats = [];
 
@@ -388,19 +394,18 @@
     {
       id: "dmg",
       title: "피해량 증가",
-      desc: "+30% 피해량",
+      desc: "피해량 +3",
       badge: "+DMG",
-      apply: () => applyToAllPlayers((p) => (p.damage *= 1.3)),
+      apply: () => applyToAllPlayers((p) => (p.damage = (p.damage || 0) + 3)),
     },
     {
       id: "as",
       title: "공격 속도",
-      desc: "+20% 속도",
+      desc: "공격 속도 +1",
       badge: "+AS",
       apply: () => applyToAllPlayers((p) => {
-        p.fireRate *= 1.2; // 총 캐릭터: 발사 속도 증가
-        p.angularSpeed *= 1.2; // 칼 캐릭터: 회전 속도 증가
-        // 칼 막대기의 회전 속도도 업데이트
+        p.fireRate = (p.fireRate || 0) + 1; // 총 캐릭터: 발사 속도 증가
+        p.angularSpeed = (p.angularSpeed || 0) + 1; // 칼 캐릭터: 회전 속도 증가
         const sword = swords.find(s => s.player === p);
         if (sword) {
           const speedSign = sword.angularSpeed >= 0 ? 1 : -1;
@@ -411,30 +416,30 @@
     {
       id: "spd",
       title: "이동 속도",
-      desc: "+20% 이동 속도",
+      desc: "이동 속도 +1",
       badge: "+MS",
-      apply: () => applyToAllPlayers((p) => (p.speed *= 1.2)),
+      apply: () => applyToAllPlayers((p) => (p.speed = (p.speed || 0) + 1)),
     },
     {
       id: "hp",
       title: "최대 체력",
-      desc: "+25 최대 체력 (현재 체력도 회복)",
+      desc: "+40 최대 체력 (현재 체력도 회복)",
       badge: "+HP",
       apply: () => {
         applyToAllPlayers((p) => {
-          p.hpMax += 25;
-          p.hp = Math.min(p.hpMax, p.hp + 25);
+          p.hpMax += 40;
+          p.hp = Math.min(p.hpMax, p.hp + 40);
         });
       },
     },
     {
       id: "heal",
       title: "생명력 회복",
-      desc: "30% 체력 회복",
+      desc: "50% 체력 회복",
       badge: "HEAL",
       apply: () => {
         applyToAllPlayers((p) => {
-          const healAmount = p.hpMax * 0.3;
+          const healAmount = p.hpMax * 0.5;
           p.hp = Math.min(p.hpMax, p.hp + healAmount);
         });
       },
@@ -442,9 +447,9 @@
     {
       id: "regen",
       title: "재생",
-      desc: "+1.0 HP/초",
+      desc: "+5.0 HP/초",
       badge: "REGEN",
-      apply: () => applyToAllPlayers((p) => (p.regen += 1.0)),
+      apply: () => applyToAllPlayers((p) => (p.regen += 5.0)),
     },
     {
       id: "size",
@@ -465,23 +470,23 @@
     {
       id: "pierce",
       title: "관통",
-      desc: "+1 관통",
+      desc: "+3 관통",
       badge: "+PIERCE",
-      apply: () => applyToAllPlayers((p) => (p.pierce += 1)),
+      apply: () => applyToAllPlayers((p) => (p.pierce += 3)),
     },
     {
       id: "magnet",
       title: "자석 범위",
-      desc: "+35% 경험치 흡수 범위",
+      desc: "+40% 경험치 흡수 범위",
       badge: "+MAG",
-      apply: () => applyToAllPlayers((p) => (p.pickup *= 1.35)),
+      apply: () => applyToAllPlayers((p) => (p.pickup *= 1.4)),
     },
     {
       id: "dash",
       title: "대시 쿨다운 감소",
-      desc: "대시 쿨다운 -18%",
+      desc: "대시 쿨다운 -20%",
       badge: "DASH",
-      apply: () => applyToAllPlayers((p) => (p.dashCdMax *= 0.82)),
+      apply: () => applyToAllPlayers((p) => (p.dashCdMax *= 0.8)),
     },
     {
       id: "bomb",
@@ -515,12 +520,14 @@
     if (peerConn) {
       try { peerConn.close(); } catch (e) {}
       peerConn = null;
+      peerConnOpen = false;
     }
     if (peer) {
       try { peer.destroy(); } catch (e) {}
       peer = null;
     }
     lastGuestPlayerState = null;
+    lastHostPlayerState = null;
     isHost = false;
     clientId = null;
     myPlayerId = null;
@@ -545,10 +552,12 @@
     enemies.length = 0;
     orbs.length = 0;
     statDrops.length = 0;
+    invincibilityDrops.length = 0;
     floats.length = 0;
     treasureChests.length = 0;
     lastTreasureChestTime = 0;
     lastBossTime = 0;
+    lastInvincibilitySpawnTime = -60;
     totalKills = 0;
 
     // 효과 초기화
@@ -856,7 +865,9 @@
 
     choicesEl.innerHTML = "";
     lastGuestPlayerState = null;
+    lastHostPlayerState = null;
     peerConn = null;
+    peerConnOpen = false;
 
     const roomId = "ms-" + Math.random().toString(36).substr(2, 8);
 
@@ -881,7 +892,7 @@
     });
 
     const backBtn = createBackButton(() => {
-      if (peerConn) { try { peerConn.close(); } catch (e) {} peerConn = null; }
+      if (peerConn) { try { peerConn.close(); } catch (e) {} peerConn = null; peerConnOpen = false; }
       if (peer) { try { peer.destroy(); } catch (e) {} peer = null; }
       showStartMenu();
     });
@@ -903,15 +914,20 @@
     });
 
     peer.on("connection", (conn) => {
-      conn.on("open", () => {
-        peerConn = conn;
-        conn.on("data", (data) => {
+      peerConn = conn; // 연결 수락 직후 설정 → 수신·전송·그리기 즉시 사용
+      conn.on("data", (data) => {
+        try {
           const msg = typeof data === "string" ? JSON.parse(data) : data;
           handleServerMessage(msg);
-        });
-        conn.on("close", () => { peerConn = null; });
-        conn.on("error", () => { peerConn = null; });
+        } catch (e) {
+          console.warn("PeerJS 수신 파싱 오류:", e);
+        }
+      });
+      conn.on("close", () => { peerConn = null; peerConnOpen = false; });
+      conn.on("error", () => { peerConn = null; peerConnOpen = false; });
 
+      conn.on("open", () => {
+        peerConnOpen = true;
         const state = {
           players: {
             P1: {
@@ -1165,14 +1181,20 @@
 
       peer.on("open", () => {
         const conn = peer.connect(roomId);
-        conn.on("open", () => {
-          peerConn = conn;
-          conn.on("data", (data) => {
+        peerConn = conn; // 연결 시도 직후 설정 → 수신·전송·그리기 즉시 사용
+        if (!myPlayerId) myPlayerId = "P2";
+        conn.on("data", (data) => {
+          try {
             const msg = typeof data === "string" ? JSON.parse(data) : data;
             handleServerMessage(msg);
-          });
-          conn.on("close", () => { peerConn = null; });
-          conn.on("error", () => { peerConn = null; });
+          } catch (e) {
+            console.warn("PeerJS 수신 파싱 오류:", e);
+          }
+        });
+        conn.on("open", () => {
+          peerConnOpen = true;
+          conn.on("close", () => { peerConn = null; peerConnOpen = false; });
+          conn.on("error", () => { peerConn = null; peerConnOpen = false; });
         });
         conn.on("error", (err) => {
           console.error("PeerJS 조인 오류:", err);
@@ -1197,7 +1219,7 @@
     });
 
     const backBtn = createBackButton(() => {
-      if (peerConn) { try { peerConn.close(); } catch (e) {} peerConn = null; }
+      if (peerConn) { try { peerConn.close(); } catch (e) {} peerConn = null; peerConnOpen = false; }
       if (peer) { try { peer.destroy(); } catch (e) {} peer = null; }
       showStartMenu();
     });
@@ -1550,10 +1572,31 @@
   }
 
   function handleServerMessage(data) {
+    // P2P 전용: 상대가 보낸 위치 → remotePlayers에 반영 (호스트/게스트 동일, 좌표 일치용)
+    if (data.type === "playerState" && data.playerId && String(data.playerId) !== String(myPlayerId)) {
+      const base = { r: 12, pickup: 70 };
+      const prev = remotePlayers[data.playerId];
+      const x = typeof data.x === "number" ? data.x : (prev?.x ?? 0);
+      const y = typeof data.y === "number" ? data.y : (prev?.y ?? 0);
+      const vx = typeof data.vx === "number" ? data.vx : (prev?.vx ?? 0);
+      const vy = typeof data.vy === "number" ? data.vy : (prev?.vy ?? 0);
+      const payload = {
+        ...base,
+        ...(prev || {}),
+        id: data.playerId,
+        x, y, vx, vy,
+        color: data.color || prev?.color || "rgba(124,92,255,0.95)",
+      };
+      remotePlayers[data.playerId] = payload;
+      if (isHost && data.playerId === "P2") lastGuestPlayerState = { x, y, vx, vy, color: payload.color };
+      if (!isHost && data.playerId === "P1") lastHostPlayerState = { x, y, vx, vy, color: payload.color };
+      return;
+    }
     // PeerJS P2P: 호스트가 게스트의 playerUpdate 수신 시 저장 + 원격 플레이어로 표시용 반영
     if (data.type === "playerUpdate" && isHost && data.player && data.playerId) {
       lastGuestPlayerState = data.player;
-      remotePlayers[data.playerId] = { ...data.player, id: data.playerId, color: data.player.color || "rgba(124,92,255,0.95)" };
+      const base = { r: 12, pickup: 70 };
+      remotePlayers[data.playerId] = { ...base, ...data.player, id: data.playerId, color: data.player.color || "rgba(124,92,255,0.95)" };
       return;
     }
     switch (data.type) {
@@ -1565,6 +1608,17 @@
 
         if (data.tailscaleIP || data.serverIP) {
           localStorage.setItem('lastServerIP', data.tailscaleIP || data.serverIP);
+        }
+
+        // 게스트: connected에 포함된 호스트 상태로 즉시 remotePlayers 채우기 (상대 캐릭터 표시)
+        if (!isHost && data.state && data.state.players) {
+          const base = { r: 12, pickup: 70 };
+          Object.keys(data.state.players).forEach((pid) => {
+            if (String(pid) !== String(myPlayerId)) {
+              const sp = data.state.players[pid];
+              remotePlayers[pid] = { ...base, ...sp, id: pid, color: sp.color || "rgba(124,92,255,0.95)" };
+            }
+          });
         }
 
         if (isHost) {
@@ -1584,18 +1638,27 @@
         break;
 
       case "state":
-        // 서버/호스트 상태 동기화 (상대방 캐릭터 표시용)
+        if (!data.state) break;
+        if (!isHost && data.state.players && data.state.players["P1"]) {
+          const p1 = data.state.players["P1"];
+          lastHostPlayerState = { x: p1.x, y: p1.y, vx: p1.vx, vy: p1.vy, color: p1.color };
+        }
+        // 서버/호스트 상태 동기화 → 게스트 화면에 호스트(P1) 캐릭터 표시
         if (data.state.players) {
+          const base = { r: 12, pickup: 70 };
           Object.keys(data.state.players).forEach((pid) => {
-            if (pid !== myPlayerId) {
-              if (!remotePlayers[pid]) {
-                remotePlayers[pid] = { ...data.state.players[pid], id: pid, color: data.state.players[pid].color || "rgba(124,92,255,0.95)" };
-              } else {
-                // 부드러운 보간 (lerp) - 위치만 보간, 능력치는 즉시 업데이트
-                const rp = remotePlayers[pid];
-                const sp = data.state.players[pid];
-                rp.x = lerp(rp.x, sp.x, 0.3);
-                rp.y = lerp(rp.y, sp.y, 0.3);
+            if (String(pid) === String(myPlayerId)) return;
+            const sp = data.state.players[pid];
+            if (!remotePlayers[pid]) {
+              remotePlayers[pid] = { ...base, ...sp, id: pid, color: sp.color || "rgba(124,92,255,0.95)", x: sp.x ?? 0, y: sp.y ?? 0 };
+            } else {
+              const rp = remotePlayers[pid];
+              const sx = typeof sp.x === "number" ? sp.x : (rp.x ?? 0);
+              const sy = typeof sp.y === "number" ? sp.y : (rp.y ?? 0);
+              rp.x = sx;
+              rp.y = sy;
+              rp.vx = typeof sp.vx === "number" ? sp.vx : (rp.vx ?? 0);
+              rp.vy = typeof sp.vy === "number" ? sp.vy : (rp.vy ?? 0);
                 // 능력치는 즉시 업데이트 (서버에서 받은 값 사용)
                 rp.hp = sp.hp;
                 rp.hpMax = sp.hpMax;
@@ -1611,17 +1674,12 @@
                 rp.projSize = sp.projSize;
                 rp.projCount = sp.projCount || 1;
               }
-            }
           });
-          // 서버에서 사라진 플레이어 제거
           Object.keys(remotePlayers).forEach((pid) => {
-            if (!data.state.players[pid] || pid === myPlayerId) {
-              delete remotePlayers[pid];
-            }
+            if (!data.state.players[pid] || String(pid) === String(myPlayerId)) delete remotePlayers[pid];
           });
         }
-        // 게스트가 들어오면 자동으로 멀티플레이로 전환
-        const remotePlayerCount = Object.keys(data.state.players || {}).filter(pid => pid !== myPlayerId).length;
+        const remotePlayerCount = Object.keys(data.state.players || {}).filter(pid => String(pid) !== String(myPlayerId)).length;
         if (remotePlayerCount > 0 && !multiplayer && isHost) {
           // 호스트가 1인 플레이 중인데 게스트가 들어옴 -> 멀티플레이로 전환
           multiplayer = true;
@@ -1642,11 +1700,16 @@
         break;
 
       case "projectile":
-        // 원격 플레이어의 투사체 추가
-        if (data.playerId !== myPlayerId && data.projectile) {
+        // 원격 플레이어의 투사체 추가 — 발사 위치를 상대 캐릭터 위치와 맞춰서 총알이 캐릭터에서 나오게
+        if (String(data.playerId) !== String(myPlayerId) && data.projectile) {
+          const rp = remotePlayers[data.playerId];
+          const ox = (rp && typeof rp.x === "number") ? rp.x : data.projectile.x;
+          const oy = (rp && typeof rp.y === "number") ? rp.y : data.projectile.y;
           remoteProjectiles.push({
             ...data.projectile,
             playerId: data.playerId,
+            x: ox,
+            y: oy,
           });
         }
         break;
@@ -1661,7 +1724,8 @@
   }
 
   function sendToServer(data) {
-    if (peerConn && peerConn.open) {
+    // PeerJS: 연결만 있으면 전송 (open 속성은 환경에 따라 불안정할 수 있음)
+    if (peerConn) {
       try {
         peerConn.send(JSON.stringify(data));
       } catch (e) {
@@ -1689,7 +1753,7 @@
     if (lastGuestPlayerState) players.P2 = { ...lastGuestPlayerState, id: "P2" };
     return {
       players,
-      started: state.started,
+      started,
       gameOver: state.gameOver,
     };
   }
@@ -1730,14 +1794,14 @@
 
     // 능력치 목록 (등급)
     const statUpgrades = [
-      { id: "dmg", title: "피해량", desc: "피해량 +1", badge: "DMG", apply: () => applyToAllPlayers((p) => (p.damage += 1)) },
-      { id: "hp", title: "최대 체력", desc: "최대 체력 +10", badge: "HP", apply: () => applyToAllPlayers((p) => { p.hpMax += 10; p.hp = Math.min(p.hpMax, p.hp + 10); }) },
-      { id: "speed", title: "이동 속도", desc: "이동 속도 +10", badge: "SPD", apply: () => applyToAllPlayers((p) => (p.speed += 10)) },
-      { id: "fireRate", title: "공격 속도", desc: "공격 속도 +0.2", badge: "FR", apply: () => applyToAllPlayers((p) => {
-        p.fireRate += 0.2;
-        p.angularSpeed += 0.5;
+      { id: "dmg", title: "피해량", desc: "피해량 +3", badge: "DMG", apply: () => applyToAllPlayers((p) => (p.damage = (p.damage || 0) + 3)) },
+      { id: "hp", title: "최대 체력", desc: "최대 체력 +100", badge: "HP", apply: () => applyToAllPlayers((p) => { p.hpMax += 100; p.hp = Math.min(p.hpMax, p.hp + 100); }) },
+      { id: "speed", title: "이동 속도", desc: "이동 속도 +1", badge: "SPD", apply: () => applyToAllPlayers((p) => (p.speed = (p.speed || 0) + 1)) },
+      { id: "fireRate", title: "공격 속도", desc: "공격 속도 +1", badge: "FR", apply: () => applyToAllPlayers((p) => {
+        p.fireRate = (p.fireRate || 0) + 1;
+        p.angularSpeed = (p.angularSpeed || 0) + 1;
       }) },
-      { id: "hpRegen", title: "체력 회복", desc: "체력 회복 +0.5", badge: "REG", apply: () => applyToAllPlayers((p) => (p.regen += 0.5)) },
+      { id: "hpRegen", title: "체력 회복", desc: "체력 회복 +1", badge: "REG", apply: () => applyToAllPlayers((p) => (p.regen += 1)) },
     ];
 
     statUpgrades.forEach((stat, idx) => {
@@ -1986,6 +2050,14 @@
     statDrops.push({ x, y, r: 10, type });
   }
 
+  // 1분마다 맵에 랜덤 위치로 5초 무적 아이템 스폰
+  function spawnInvincibilityDrop() {
+    const margin = 180;
+    const x = camera.x + rand(-margin, margin);
+    const y = camera.y + rand(-margin, margin);
+    invincibilityDrops.push({ x, y, r: 12 });
+  }
+
   // 등급(0~3)에 따른 경험치 보석 색상
   function getOrbColor(tier) {
     const colors = [
@@ -2173,8 +2245,8 @@
       };
       projectiles.push(proj);
 
-      // 네트워크 멀티플레이: 호스트가 투사체를 생성하면 서버에 전송
-      if (from === player1 && myPlayerId && ((ws && ws.readyState === WebSocket.OPEN && isHost) || (peerConn && peerConn.open))) {
+      // 네트워크 멀티플레이: 내가 쏜 투사체를 상대에게 전송 (호스트→서버, 게스트→호스트)
+      if (from === player1 && myPlayerId && ((ws && ws.readyState === WebSocket.OPEN && isHost) || (peerConn && peerConnOpen))) {
         sendToServer({
           type: "projectile",
           playerId: myPlayerId,
@@ -2193,6 +2265,7 @@
   let spawnAcc = 0;
   let lastTreasureChestTime = 0; // 마지막 보물상자 스폰 시간
   let lastBossTime = 0; // 마지막 보스 스폰 시간
+  let lastInvincibilitySpawnTime = -60; // 1분마다 무적 아이템 스폰 (첫 스폰은 1분 후)
   let totalKills = 0; // 100킬마다 공격/방어 아이템 드랍용
 
   function reset() {
@@ -2216,10 +2289,12 @@
     enemies.length = 0;
     orbs.length = 0;
     statDrops.length = 0;
+    invincibilityDrops.length = 0;
     floats.length = 0;
     treasureChests.length = 0;
     lastTreasureChestTime = 0;
     lastBossTime = 0;
+    lastInvincibilitySpawnTime = -60;
     totalKills = 0;
 
     choosing = false;
@@ -2392,7 +2467,58 @@
     if (!state.paused && !state.gameOver && !choosing) {
       update(state.dt);
     }
+
+    // 호스트: 그리기 직전에 게스트 위치 반영 (캐릭터와 총알이 같은 좌표에서 나오도록)
+    if (USE_PEERJS_P2P && isHost && lastGuestPlayerState) {
+      const base = { r: 12, pickup: 70 };
+      const g = lastGuestPlayerState;
+      const gx = typeof g.x === "number" ? g.x : (remotePlayers["P2"]?.x ?? 0);
+      const gy = typeof g.y === "number" ? g.y : (remotePlayers["P2"]?.y ?? 0);
+      remotePlayers["P2"] = { ...base, ...remotePlayers["P2"], ...g, id: "P2", x: gx, y: gy, color: g.color || "rgba(124,92,255,0.95)" };
+    }
+    // 게스트: 그리기 직전에 호스트 위치 반영 (호스트 캐릭터가 이동한 것처럼 표시)
+    if (USE_PEERJS_P2P && !isHost && lastHostPlayerState) {
+      const base = { r: 12, pickup: 70 };
+      const h = lastHostPlayerState;
+      const hx = typeof h.x === "number" ? h.x : (remotePlayers["P1"]?.x ?? 0);
+      const hy = typeof h.y === "number" ? h.y : (remotePlayers["P1"]?.y ?? 0);
+      remotePlayers["P1"] = { ...base, ...remotePlayers["P1"], ...h, id: "P1", x: hx, y: hy, color: h.color || "rgba(124,92,255,0.95)" };
+    }
+
     render();
+
+    // P2P: 매 프레임 내 위치 전송 → 상대 화면에서 내가 이동한 좌표가 반영되도록
+    if (peerConn && USE_PEERJS_P2P && (peerConnOpen || peerConn.open === true)) {
+      const pid = myPlayerId || (isHost ? "P1" : "P2");
+      sendToServer({
+        type: "playerState",
+        playerId: pid,
+        x: player1.x,
+        y: player1.y,
+        vx: player1.vx ?? 0,
+        vy: player1.vy ?? 0,
+        color: player1.color || "rgba(124,92,255,0.95)",
+      });
+    }
+    // 호스트: 매 프레임 state 전송 → 게스트가 호스트 위치를 받아서 표시
+    if (peerConn && USE_PEERJS_P2P && isHost && (peerConnOpen || peerConn.open === true)) {
+      sendToServer({ type: "state", state: buildP2PState() });
+    }
+    // 게스트: 게임 시작 전에 playerUpdate 추가 전송 (위 playerState와 함께 좌표 이중 전송)
+    if (peerConn && USE_PEERJS_P2P && !isHost && myPlayerId && (peerConnOpen || peerConn.open === true) && !started) {
+      sendToServer({
+        type: "playerUpdate",
+        playerId: myPlayerId,
+        player: {
+          x: player1.x, y: player1.y, vx: player1.vx ?? 0, vy: player1.vy ?? 0,
+          hp: player1.hp, hpMax: player1.hpMax, level: player1.level,
+          damage: player1.damage, defense: player1.defense ?? 0, bombs: player1.bombs ?? 3,
+          fireRate: player1.fireRate, pierce: player1.pierce, pickup: player1.pickup,
+          dashCd: player1.dashCd, dashCdMax: player1.dashCdMax,
+          projSize: player1.projSize, projCount: player1.projCount || 1,
+        },
+      });
+    }
 
     requestAnimationFrame(frame);
   }
@@ -2475,7 +2601,7 @@
           },
         };
         if (ws && ws.readyState === WebSocket.OPEN && isHost) sendToServer(payload);
-        else if (peerConn && peerConn.open && !isHost) sendToServer(payload);
+        else if (peerConn && peerConnOpen && !isHost) sendToServer(payload);
       }
 
       // Auto shooting (per player)
@@ -2488,7 +2614,7 @@
     }
 
     // PeerJS P2P: 호스트가 게스트에게 상태 브로드캐스트 (서버 대신)
-    if (USE_PEERJS_P2P && isHost && peerConn && peerConn.open) {
+    if (USE_PEERJS_P2P && isHost && peerConn && peerConnOpen) {
       sendToServer({ type: "state", state: buildP2PState() });
     }
 
@@ -2789,6 +2915,12 @@
       lastBossTime = state.t;
     }
 
+    // 5초 무적 아이템 스폰 (1분마다, 맵 랜덤)
+    if (state.t - lastInvincibilitySpawnTime >= 60.0) {
+      spawnInvincibilityDrop();
+      lastInvincibilitySpawnTime = state.t;
+    }
+
     // Update treasure chests (플레이어와 충돌 체크)
     for (let i = treasureChests.length - 1; i >= 0; i--) {
       const chest = treasureChests[i];
@@ -2866,6 +2998,35 @@
           floats.push({ x: sd.x, y: sd.y - 18, ttl: 0.9, text: "+5 방어력", color: "#66aaff" });
         }
         statDrops.splice(i, 1);
+      }
+    }
+
+    // 5초 무적 아이템 — 끌어당김 + 획득
+    for (let i = invincibilityDrops.length - 1; i >= 0; i--) {
+      const id = invincibilityDrops[i];
+      const ps = activePlayers();
+      let target = ps[0];
+      let bestD = Infinity;
+      for (const p of ps) {
+        const d2 = (p.x - id.x) ** 2 + (p.y - id.y) ** 2;
+        if (d2 < bestD) {
+          bestD = d2;
+          target = p;
+        }
+      }
+      const dx = target.x - id.x;
+      const dy = target.y - id.y;
+      const d = len(dx, dy);
+      if (d < target.pickup) {
+        const [nx, ny] = norm(dx, dy);
+        const pull = clamp((target.pickup - d) / target.pickup, 0, 1);
+        id.x += nx * (260 * pull * dt);
+        id.y += ny * (260 * pull * dt);
+      }
+      if (d < target.r + id.r + 2) {
+        target.invuln = Math.max(target.invuln || 0, 5);
+        floats.push({ x: id.x, y: id.y - 18, ttl: 1.0, text: "5초 무적!", color: "#ffe066" });
+        invincibilityDrops.splice(i, 1);
       }
     }
 
@@ -3051,6 +3212,16 @@
       ctx.stroke();
     }
 
+    // 5초 무적 아이템 (1분마다 맵 랜덤 스폰)
+    for (const id of invincibilityDrops) {
+      const [sx, sy] = worldToScreen(id.x, id.y);
+      ctx.fillStyle = "rgba(255,224,102,0.95)";
+      ctx.strokeStyle = "rgba(255,200,50,0.8)";
+      drawStar(ctx, sx, sy, id.r);
+      ctx.fill();
+      ctx.stroke();
+    }
+
     // Orbs (등급별 색·모양: 적과 동일한 등급 = 같은 경험치 등급)
     for (const o of orbs) {
       const [sx, sy] = worldToScreen(o.x, o.y);
@@ -3157,56 +3328,46 @@
       ctx.fillRect(sx - e.r, sy - e.r - 10, e.r * 2 * pct, 4);
     }
 
-    // Players
+    // Players (자신 + 원격 플레이어; 원격은 r/pickup 등이 없을 수 있어 기본값 사용)
     {
       const ps = activePlayers();
       for (const p of ps) {
-        const [sx, sy] = worldToScreen(p.x, p.y);
+        const px = Number(p.x);
+        const py = Number(p.y);
+        if (Number.isNaN(px) || Number.isNaN(py)) continue;
+        const [sx, sy] = worldToScreen(px, py);
+        const radius = p.r ?? 12;
+        const pickupRadius = p.pickup ?? 70;
 
-      // pickup ring
-      ctx.beginPath();
-      ctx.strokeStyle = "rgba(69,255,177,0.07)";
-      ctx.lineWidth = 2;
-        ctx.arc(sx, sy, p.pickup, 0, TAU);
-      ctx.stroke();
+        // pickup ring
+        ctx.beginPath();
+        ctx.strokeStyle = "rgba(69,255,177,0.07)";
+        ctx.lineWidth = 2;
+        ctx.arc(sx, sy, pickupRadius, 0, TAU);
+        ctx.stroke();
 
-      // body
-      ctx.beginPath();
-        const inv = p.invuln > 0;
-        ctx.fillStyle = inv ? "rgba(255,255,255,0.95)" : p.color;
-        ctx.arc(sx, sy, p.r, 0, TAU);
-      ctx.fill();
+        // body
+        ctx.beginPath();
+        const inv = (p.invuln ?? 0) > 0;
+        ctx.fillStyle = inv ? "rgba(255,255,255,0.95)" : (p.color || "rgba(124,92,255,0.95)");
+        ctx.arc(sx, sy, radius, 0, TAU);
+        ctx.fill();
 
-      // direction nub
-        const d = norm(p.vx, p.vy);
-      ctx.beginPath();
-      ctx.fillStyle = "rgba(124,92,255,0.9)";
-      ctx.arc(sx + d[0] * 10, sy + d[1] * 10, 3.2, 0, TAU);
-      ctx.fill();
+        // direction nub
+        const vx = p.vx ?? 0, vy = p.vy ?? 0;
+        const d = norm(vx, vy);
+        ctx.beginPath();
+        ctx.fillStyle = "rgba(124,92,255,0.9)";
+        ctx.arc(sx + d[0] * 10, sy + d[1] * 10, 3.2, 0, TAU);
+        ctx.fill();
 
-        // label (네트워크 멀티: 호스트/게스트)
+        // label: 자신은 위쪽, 상대는 아래쪽에 표시해 겹치지 않게
         ctx.fillStyle = "rgba(159,176,214,0.95)";
         ctx.font = "11px ui-sans-serif, system-ui";
-        ctx.fillText(isNetworkConnected() ? getPlayerDisplayName(myPlayerId) : p.id, sx - 10, sy - p.r - 10);
-      }
-
-      // 원격 플레이어 렌더링 (네트워크 멀티플레이: WebSocket 또는 PeerJS)
-      if (isNetworkConnected()) {
-        Object.values(remotePlayers).forEach((rp) => {
-          if (rp.id === myPlayerId) return; // 자신은 제외
-          const [sx, sy] = worldToScreen(rp.x || 0, rp.y || 0);
-
-          // body
-          ctx.beginPath();
-          ctx.fillStyle = rp.color || "rgba(124,92,255,0.95)";
-          ctx.arc(sx, sy, 12, 0, TAU);
-          ctx.fill();
-
-          // label (호스트/게스트)
-          ctx.fillStyle = "rgba(159,176,214,0.95)";
-          ctx.font = "11px ui-sans-serif, system-ui";
-          ctx.fillText(getPlayerDisplayName(rp.id), sx - 10, sy - 18);
-        });
+        const label = isNetworkConnected() ? (p === player1 ? getPlayerDisplayName(myPlayerId) : getPlayerDisplayName(p.id)) : p.id;
+        const isRemote = p !== player1;
+        const labelY = isRemote ? sy + radius + 14 : sy - radius - 10;
+        ctx.fillText(label, sx - 10, labelY);
       }
 
       // HP bars (P1 / P2)
